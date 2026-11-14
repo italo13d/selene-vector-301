@@ -87,27 +87,27 @@ const TimelineBar: React.FC<{ points: Array<{ sun_visible: boolean; earth_visibl
         aria-valuemin={0}
         aria-valuemax={displayPoints.length - 1}
       >
-        {displayPoints.map((p, i) => {
-          let color = '#1E293B'; // dark = eclipse + no earth
-          if (p.sun_visible && p.earth_visible) color = '#22c55e'; // both = green
-          else if (p.sun_visible) color = '#F59E0B'; // solar only = amber
-          else if (p.earth_visible) color = '#06B6D4'; // DTE only = cyan
-          else color = '#EF444430'; // nothing = dim red
-          return (
-            <div
-              key={i}
-              onClick={() => onScrub(i)}
-              style={{
-                flex: 1,
-                background: color,
-                outline: i === currentIdx ? '2px solid #F8FAFC' : 'none',
-                outlineOffset: -1,
-                minWidth: 2,
-              }}
-              title={`T+${(i * 2).toString().padStart(3, '0')}h — Solar: ${p.sun_visible ? 'ON' : 'OFF'}, DTE: ${p.earth_visible ? 'ON' : 'OFF'}`}
-            />
-          );
-        })}
+         {displayPoints.map((p, i) => {
+           // Determine base color for the slot
+           let color = '#1E293B'; // eclipse
+           if (p.sun_visible && p.earth_visible) color = '#22c55e'; // both = green
+           else if (p.sun_visible) color = '#F59E0B'; // solar only = amber
+           else if (p.earth_visible) color = '#06B6D4'; // DTE only = cyan
+           else color = '#1E293B'; // eclipse uses the same slate as the legend
+
+           return (
+             <div
+               key={i}
+               onClick={() => onScrub(i)}
+               className={`flex-1 ${i === currentIdx ? 'ring-2 ring-white z-10' : ''}`}
+               style={{
+                 background: color,
+                 minWidth: 2,
+               }}
+               title={`T+${(i * 2).toString().padStart(3, '0')}h — Solar: ${p.sun_visible ? 'ON' : 'OFF'}, DTE: ${p.earth_visible ? 'ON' : 'OFF'}`}
+             />
+           );
+         })}
       </div>
       <div className="flex justify-between mt-1 text-xs font-mono" style={{ color: '#F8FAFC30' }}>
         <span>T+0h</span>
@@ -538,14 +538,14 @@ export default function App() {
                   {/* T-Minus cards */}
                   <div className="grid grid-cols-2 gap-3">
                     <TMinusCard
-                      label="T-MINUS SUNSET"
-                      hours={telemetry?.t_minus_sunset_hours ?? 0}
+                      label={telemetry && telemetry.sun_countdown.state === 'SUNLIT' ? 'T-MINUS SUNSET' : 'T-MINUS SUNRISE'}
+                      hours={telemetry ? (telemetry.sun_countdown.state === 'SUNLIT' ? telemetry.sun_countdown.t_minus_sunset_hours : (telemetry.sun_countdown.t_minus_sunrise_hours ?? 0)) : 0}
                       color="#F59E0B"
                       icon={<Sun size={12} />}
                     />
                     <TMinusCard
-                      label="T-MINUS EARTHSET"
-                      hours={telemetry?.t_minus_earthset_hours ?? 0}
+                      label={telemetry && telemetry.dte_countdown.state === 'DTE_ACTIVE' ? 'T-MINUS EARTHSET' : 'T-MINUS EARTHRISE'}
+                      hours={telemetry ? (telemetry.dte_countdown.state === 'DTE_ACTIVE' ? telemetry.dte_countdown.t_minus_earthset_hours : (telemetry.dte_countdown.t_minus_earthrise_hours ?? 0)) : 0}
                       color="#06B6D4"
                       icon={<Globe size={12} />}
                     />

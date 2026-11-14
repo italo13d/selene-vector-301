@@ -47,8 +47,9 @@ export interface SiteTelemetry {
   solar_uptime_pct: number;
   dte_uptime_pct: number;
   max_continuous_eclipse_hours: number;
-  t_minus_sunset_hours: number;
-  t_minus_earthset_hours: number;
+  // Discriminated unions for countdown states
+  sun_countdown: { state: 'SUNLIT'; t_minus_sunset_hours: number } | { state: 'ECLIPSED'; t_minus_sunrise_hours: number | null };
+  dte_countdown: { state: 'DTE_ACTIVE'; t_minus_earthset_hours: number } | { state: 'NO_SIGNAL'; t_minus_earthrise_hours: number | null };
   avg_solar_eff_pct: number;
 }
 
@@ -112,26 +113,45 @@ function computeMaxContinuousEclipseHours(points: TelemetryPoint[]): number {
   return maxEclipse;
 }
 
-function computeTMinusSunset(points: TelemetryPoint[]): number {
-  // Find hours until next sun-down from first visible point
+function computeTMinusSunsetFrom(points: TelemetryPoint[], startIndex = 0): number | null {
   const INTERVAL_HOURS = 2;
-  for (let i = 0; i < points.length - 1; i++) {
+  for (let i = startIndex; i < points.length - 1; i++) {
     if (points[i].sun_visible && !points[i + 1].sun_visible) {
-      return (points.length - 1 - i) * INTERVAL_HOURS;
+      return (i + 1 - startIndex) * INTERVAL_HOURS;
     }
   }
-  // If always visible, return total duration
-  return points.length * INTERVAL_HOURS;
+  // No upcoming sunset in window
+  return null;
 }
 
-function computeTMinusEarthset(points: TelemetryPoint[]): number {
+function computeTMinusSunriseFrom(points: TelemetryPoint[], startIndex = 0): number | null {
   const INTERVAL_HOURS = 2;
-  for (let i = 0; i < points.length - 1; i++) {
-    if (points[i].earth_visible && !points[i + 1].earth_visible) {
-      return (points.length - 1 - i) * INTERVAL_HOURS;
+  for (let i = startIndex; i < points.length - 1; i++) {
+    if (!points[i].sun_visible && points[i + 1].sun_visible) {
+      return (i + 1 - startIndex) * INTERVAL_HOURS;
     }
   }
-  return points.length * INTERVAL_HOURS;
+  return null;
+}
+
+function computeTMinusEarthsetFrom(points: TelemetryPoint[], startIndex = 0): number | null {
+  const INTERVAL_HOURS = 2;
+  for (let i = startIndex; i < points.length - 1; i++) {
+    if (points[i].earth_visible && !points[i + 1].earth_visible) {
+      return (i + 1 - startIndex) * INTERVAL_HOURS;
+    }
+  }
+  return null;
+}
+
+function computeTMinusEarthriseFrom(points: TelemetryPoint[], startIndex = 0): number | null {
+  const INTERVAL_HOURS = 2;
+  for (let i = startIndex; i < points.length - 1; i++) {
+    if (!points[i].earth_visible && points[i + 1].earth_visible) {
+      return (i + 1 - startIndex) * INTERVAL_HOURS;
+    }
+  }
+  return null;
 }
 
 function computeUptimePct(points: TelemetryPoint[], key: 'sun_visible' | 'earth_visible'): number {
@@ -153,8 +173,27 @@ export function getSiteTelemetry(siteId: string, offset: LaunchOffset): SiteTele
   const solar_uptime_pct = computeUptimePct(points, 'sun_visible');
   const dte_uptime_pct = computeUptimePct(points, 'earth_visible');
   const max_continuous_eclipse_hours = computeMaxContinuousEclipseHours(points);
-  const t_minus_sunset_hours = computeTMinusSunset(points);
-  const t_minus_earthset_hours = computeTMinusEarthset(points);
+  // Build discriminated countdown states based on the initial point
+  let sun_countdown: SiteTelemetry['sun_countdown'];
+  if (points[0].sun_visible) {
+    const tm = computeTMinusSunsetFrom(points, 0);
+    // If no sunset in-window, cap to window duration (T+336h == (points.length-1)*2)
+    const capped = (points.length - 1 - 0) * 2;
+    sun_countdown = { state: 'SUNLIT', t_minus_sunset_hours: tm === null ? capped : tm };
+  } else {
+    const tm = computeTMinusSunriseFrom(points, 0);
+    sun_countdown = { state: 'ECLIPSED', t_minus_sunrise_hours: tm };
+  }
+
+  let dte_countdown: SiteTelemetry['dte_countdown'];
+  if (points[0].earth_visible) {
+    const tm = computeTMinusEarthsetFrom(points, 0);
+    const capped = (points.length - 1 - 0) * 2;
+    dte_countdown = { state: 'DTE_ACTIVE', t_minus_earthset_hours: tm === null ? capped : tm };
+  } else {
+    const tm = computeTMinusEarthriseFrom(points, 0);
+    dte_countdown = { state: 'NO_SIGNAL', t_minus_earthrise_hours: tm };
+  }
   const avg_solar_eff_pct = points.reduce((sum, p) => sum + p.solar_eff_pct, 0) / points.length;
 
   return {
@@ -166,8 +205,8 @@ export function getSiteTelemetry(siteId: string, offset: LaunchOffset): SiteTele
     solar_uptime_pct,
     dte_uptime_pct,
     max_continuous_eclipse_hours,
-    t_minus_sunset_hours,
-    t_minus_earthset_hours,
+    sun_countdown,
+    dte_countdown,
     avg_solar_eff_pct,
   };
 }
@@ -222,9 +261,26 @@ export function getCustomCoordTelemetry(
   const solar_uptime_pct = computeUptimePct(points, 'sun_visible');
   const dte_uptime_pct = computeUptimePct(points, 'earth_visible');
   const max_continuous_eclipse_hours = computeMaxContinuousEclipseHours(points);
-  const t_minus_sunset_hours = computeTMinusSunset(points);
-  const t_minus_earthset_hours = computeTMinusEarthset(points);
   const avg_solar_eff_pct = points.reduce((sum, p) => sum + p.solar_eff_pct, 0) / points.length;
+
+  // Discriminated countdown states for custom site (based on initial point)
+  let sun_countdown: SiteTelemetry['sun_countdown'];
+  if (points[0].sun_visible) {
+    const tm = computeTMinusSunsetFrom(points, 0);
+    sun_countdown = { state: 'SUNLIT', t_minus_sunset_hours: tm === null ? points.length * 2 : tm };
+  } else {
+    const tm = computeTMinusSunriseFrom(points, 0);
+    sun_countdown = { state: 'ECLIPSED', t_minus_sunrise_hours: tm };
+  }
+
+  let dte_countdown: SiteTelemetry['dte_countdown'];
+  if (points[0].earth_visible) {
+    const tm = computeTMinusEarthsetFrom(points, 0);
+    dte_countdown = { state: 'DTE_ACTIVE', t_minus_earthset_hours: tm === null ? points.length * 2 : tm };
+  } else {
+    const tm = computeTMinusEarthriseFrom(points, 0);
+    dte_countdown = { state: 'NO_SIGNAL', t_minus_earthrise_hours: tm };
+  }
 
   return {
     site,
@@ -235,8 +291,8 @@ export function getCustomCoordTelemetry(
     solar_uptime_pct,
     dte_uptime_pct,
     max_continuous_eclipse_hours,
-    t_minus_sunset_hours,
-    t_minus_earthset_hours,
+    sun_countdown,
+    dte_countdown,
     avg_solar_eff_pct,
   };
 }

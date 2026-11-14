@@ -116,3 +116,15 @@ Multi-criteria decision analysis using **vector-normalized AHP-TOPSIS**:
 | ---------- | ------------------ |
 | Headings   | **Space Grotesk**  |
 | Monospace  | **JetBrains Mono** |
+
+---
+
+## Specification & Regression Gate
+
+All implementation changes must reference REQUIREMENTS.md. Every pull request or direct change to source code must satisfy the project regression gate before merging:
+
+- Run `npm test && npm run build` and ensure the command exits with status code 0.
+- All requirement IDs in REQUIREMENTS.md must have at least one automated test in `src/lib/__tests__/` or `src/__tests__/` and must be referenced in the test descriptions.
+- Changes to astrodynamics code (orbitalPhysics, AHP-TOPSIS) require a short note in the PR describing which REQ-* items are affected and why tests were updated.
+
+This gate is mandatory and enforced by CI. It prevents regressions to physics, safety vetoes, and UI workflows.
