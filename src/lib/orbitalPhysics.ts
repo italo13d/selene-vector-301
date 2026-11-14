@@ -36,6 +36,7 @@ export interface TelemetryPoint {
   sun_visible: boolean;
   earth_visible: boolean;
   solar_eff_pct: number;
+  battery_soc_pct?: number; // optional until computed
 }
 
 export interface SiteTelemetry {
@@ -95,6 +96,32 @@ function processPoints(
     const solar_eff_pct = computeSolarEff(p.sun_el, sun_visible);
     return { ...p, sun_visible, earth_visible, solar_eff_pct };
   });
+}
+
+// Compute a deterministic battery state-of-charge trajectory for a sequence of telemetry points.
+// - start_soc_pct: initial SoC at t=0
+// - charge model: when sun_visible, charge proportional to solar_eff_pct; when eclipsed, discharge at ~3.2%/hr
+export function computeBatteryTrajectory(points: TelemetryPoint[], start_soc_pct = 85): number[] {
+  const INTERVAL_HOURS = 2;
+  const soc: number[] = [];
+  let current = start_soc_pct;
+  // Defines per-hour rates
+  const discharge_per_hr = 3.2; // percent per hour when eclipsed
+  // charging efficiency factor: full sun (100% eff) charges at 4%/hr (tunable)
+  const charge_per_hr_at_full_sun = 4.0;
+
+  for (const p of points) {
+    if (p.sun_visible) {
+      const charge_rate_hr = (p.solar_eff_pct / 100) * charge_per_hr_at_full_sun;
+      current = current + charge_rate_hr * INTERVAL_HOURS;
+    } else {
+      current = current - discharge_per_hr * INTERVAL_HOURS;
+    }
+    // clamp 0-100
+    current = Math.max(0, Math.min(100, current));
+    soc.push(current);
+  }
+  return soc;
 }
 
 function computeMaxContinuousEclipseHours(points: TelemetryPoint[]): number {
@@ -262,6 +289,12 @@ export function getCustomCoordTelemetry(
   const dte_uptime_pct = computeUptimePct(points, 'earth_visible');
   const max_continuous_eclipse_hours = computeMaxContinuousEclipseHours(points);
   const avg_solar_eff_pct = points.reduce((sum, p) => sum + p.solar_eff_pct, 0) / points.length;
+
+  // Compute battery trajectory and attach to points
+  const batteryTrajectory = computeBatteryTrajectory(points, 85);
+  for (let i = 0; i < points.length; i++) {
+    (points[i] as TelemetryPoint).battery_soc_pct = batteryTrajectory[i];
+  }
 
   // Discriminated countdown states for custom site (based on initial point)
   let sun_countdown: SiteTelemetry['sun_countdown'];

@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useCallback } from 'react';
+import React, { useState, useMemo, useCallback, useEffect, useRef } from 'react';
 import {
   Satellite, Radio, Zap, Mountain, Clock, Sun, Globe, ChevronRight,
   MapPin, Gauge, Activity, Eye, EyeOff
@@ -286,6 +286,66 @@ export default function App() {
   };
 
   const displaySite = customCoords.active && telemetry ? telemetry.site : selectedSite;
+  const [compareActive, setCompareActive] = useState(false);
+  const [compareTargetId, setCompareTargetId] = useState<string>(() => {
+    // default to apollo-11 if present, otherwise first other site
+    const ap = getAllSites().find((s) => s.id === 'apollo-11');
+    if (ap) return ap.id;
+    const other = getAllSites().find((s) => s.id !== selectedSiteId);
+    return other?.id ?? selectedSiteId;
+  });
+
+  const compareTelemetry = useMemo(() => {
+    try {
+      return getSiteTelemetry(compareTargetId, offset);
+    } catch {
+      return null;
+    }
+  }, [compareTargetId, offset]);
+  // Playback state
+  const [playing, setPlaying] = useState(false);
+  const [playSpeed, setPlaySpeed] = useState<number>(1); // 1x,5x,20x
+  const playIntervalRef = useRef<number | null>(null);
+  const prevPointRef = useRef<typeof currentPoint | null>(null);
+  const [statusBanner, setStatusBanner] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!playing) return;
+    // base tick ms per index at 1x
+    const baseMs = 500; // 500ms per 2-hour slot at 1x
+    const ms = Math.max(10, Math.round(baseMs / playSpeed));
+    const id = setInterval(() => {
+      setTimelineIdx((i) => {
+        const next = (i + 1) % 168;
+        return next;
+      });
+    }, ms) as unknown as number;
+    playIntervalRef.current = id;
+    return () => {
+      if (playIntervalRef.current) {
+        clearInterval(playIntervalRef.current);
+        playIntervalRef.current = null;
+      }
+    };
+  }, [playing, playSpeed]);
+
+  // Watch for transitions to show status banner
+  useEffect(() => {
+    if (!telemetry) return;
+    const prev = prevPointRef.current;
+    const curr = telemetry.points[timelineIdx];
+    if (prev) {
+      if (prev.sun_visible && !curr.sun_visible) {
+        setStatusBanner('ECLIPSE');
+        setTimeout(() => setStatusBanner(null), 3500);
+      }
+      if (prev.earth_visible && !curr.earth_visible) {
+        setStatusBanner('DTE LOSS OF SIGNAL');
+        setTimeout(() => setStatusBanner(null), 3500);
+      }
+    }
+    prevPointRef.current = curr;
+  }, [timelineIdx, telemetry]);
 
   return (
     <div className="min-h-screen" style={{ background: '#090D16', color: '#F8FAFC' }}>
@@ -519,6 +579,48 @@ export default function App() {
               <div className="p-4 rounded-lg text-sm leading-relaxed" style={{ background: '#131B2E', border: '1px solid #1E293B', color: '#F8FAFC80' }}>
                 {displaySite.description}
               </div>
+              {/* Compare Sites */}
+              <div className="p-3 mt-2 rounded-lg" style={{ background: '#090D16', border: '1px solid #1E293B' }}>
+                <div className="flex items-center justify-between mb-2">
+                  <div className="text-sm font-heading" style={{ color: '#F8FAFC' }}>Compare Sites</div>
+                  <div>
+                    <label className="text-xs font-mono" style={{ color: '#F8FAFC60', marginRight: 8 }}>
+                      <input type="checkbox" checked={compareActive} onChange={(e) => setCompareActive(e.target.checked)} />
+                    </label>
+                  </div>
+                </div>
+                {compareActive && (
+                  <div>
+                    <select value={compareTargetId} onChange={(e) => setCompareTargetId(e.target.value)} className="mb-2 text-xs p-1" aria-label="Compare target select">
+                      {sites.filter((s) => s.id !== displaySite.id).map((s) => (
+                        <option key={s.id} value={s.id}>{s.name}</option>
+                      ))}
+                    </select>
+                    {compareTelemetry && (
+                      <div className="grid grid-cols-2 gap-3 text-xs font-mono">
+                        <div style={{ border: '1px solid #1E293B', padding: 8 }}>
+                          <div style={{ color: '#F8FAFC80' }}>Current Site</div>
+                          <div style={{ color: '#F8FAFC' }}>{displaySite.name}</div>
+                          <div style={{ color: '#F8FAFC80' }}>Solar Uptime: <strong style={{ color: '#F59E0B' }}>{telemetry?.solar_uptime_pct.toFixed(1)}%</strong></div>
+                          <div style={{ color: '#F8FAFC80' }}>DTE Uptime: <strong style={{ color: '#06B6D4' }}>{telemetry?.dte_uptime_pct.toFixed(1)}%</strong></div>
+                          <div style={{ color: '#F8FAFC80' }}>Max Eclipse: <strong style={{ color: displaySite.max_slope_deg > 15 ? '#EF4444' : '#F8FAFC' }}>{telemetry?.max_continuous_eclipse_hours.toFixed(1)}h</strong></div>
+                          <div style={{ color: '#F8FAFC80' }}>Slope: <strong style={{ color: displaySite.max_slope_deg > 15 ? '#EF4444' : '#F8FAFC' }}>{displaySite.max_slope_deg.toFixed(1)}°</strong></div>
+                          <div style={{ color: '#F8FAFC80' }}>CSA Veto: <strong style={{ color: displaySite.max_slope_deg > 15 ? '#EF4444' : '#06B6D4' }}>{displaySite.max_slope_deg > 15 ? 'YES' : 'NO'}</strong></div>
+                        </div>
+                        <div style={{ border: '1px solid #1E293B', padding: 8 }}>
+                          <div style={{ color: '#F8FAFC80' }}>Compare Site</div>
+                          <div style={{ color: '#F8FAFC' }}>{compareTelemetry.site.name}</div>
+                          <div style={{ color: '#F8FAFC80' }}>Solar Uptime: <strong style={{ color: '#F59E0B' }}>{compareTelemetry.solar_uptime_pct.toFixed(1)}%</strong></div>
+                          <div style={{ color: '#F8FAFC80' }}>DTE Uptime: <strong style={{ color: '#06B6D4' }}>{compareTelemetry.dte_uptime_pct.toFixed(1)}%</strong></div>
+                          <div style={{ color: '#F8FAFC80' }}>Max Eclipse: <strong style={{ color: compareTelemetry.max_continuous_eclipse_hours > 24 ? '#EF4444' : '#F8FAFC' }}>{compareTelemetry.max_continuous_eclipse_hours.toFixed(1)}h</strong></div>
+                          <div style={{ color: '#F8FAFC80' }}>Slope: <strong style={{ color: compareTelemetry.site.max_slope_deg > 15 ? '#EF4444' : '#F8FAFC' }}>{compareTelemetry.site.max_slope_deg.toFixed(1)}°</strong></div>
+                          <div style={{ color: '#F8FAFC80' }}>CSA Veto: <strong style={{ color: compareTelemetry.site.max_slope_deg > 15 ? '#EF4444' : '#06B6D4' }}>{compareTelemetry.site.max_slope_deg > 15 ? 'YES' : 'NO'}</strong></div>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
 
               {/* Two-column: polar chart + telemetry */}
               <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
@@ -597,6 +699,21 @@ export default function App() {
                           </div>
                         </div>
                         <div>
+                          <div className="text-xs font-mono mb-1" style={{ color: '#F8FAFC60' }}>ROVER BATTERY (SoC)</div>
+                          <div className="font-mono font-bold text-2xl" style={{ color: currentPoint.battery_soc_pct && currentPoint.battery_soc_pct < 20 ? '#EF4444' : '#22c55e' }}>
+                            {currentPoint.battery_soc_pct?.toFixed(1) ?? '--'}%
+                          </div>
+                          <div className="w-full h-2 rounded-full mt-2" style={{ background: '#1E293B' }}>
+                            <div
+                              className="h-full rounded-full transition-all"
+                              style={{ width: `${currentPoint.battery_soc_pct ?? 0}%`, background: currentPoint.battery_soc_pct && currentPoint.battery_soc_pct < 20 ? '#EF4444' : '#22c55e' }}
+                            />
+                          </div>
+                          {currentPoint.battery_soc_pct !== undefined && currentPoint.battery_soc_pct < 20 && (
+                            <div className="mt-1 text-xs font-mono" style={{ color: '#EF4444' }}>CRITICAL — Survival threshold breached</div>
+                          )}
+                        </div>
+                        <div>
                           <div className="text-xs font-mono mb-1" style={{ color: '#F8FAFC60' }}>TERRAIN SLOPE</div>
                           <div className="flex items-center gap-2">
                             <Mountain size={16} style={{ color: displaySite.max_slope_deg > 15 ? '#EF4444' : '#22c55e' }} />
@@ -638,11 +755,42 @@ export default function App() {
               {/* Timeline bar */}
               {telemetry && (
                 <div className="p-4 rounded-lg" style={{ background: '#131B2E', border: '1px solid #1E293B' }}>
+                  <div className="flex items-center justify-between mb-2">
+                    <div className="flex items-center gap-2">
+                      <button
+                        onClick={() => setPlaying((p) => !p)}
+                        className="px-2 py-1 rounded text-xs font-mono"
+                        style={{ background: '#1E293B', color: '#F8FAFC' }}
+                        aria-label="Play Toggle"
+                      >
+                        {playing ? 'Pause' : 'Play'}
+                      </button>
+                      <div className="flex items-center gap-1">
+                        {([1, 5, 20] as const).map((s) => (
+                          <button
+                            key={s}
+                            onClick={() => setPlaySpeed(s)}
+                            className="px-2 py-1 rounded text-xs font-mono"
+                            style={{ background: playSpeed === s ? '#3B82F6' : '#1E293B', color: '#F8FAFC' }}
+                            aria-label={`Speed ${s}x`}
+                          >
+                            {s}x
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                    <div style={{ color: '#F8FAFC60' }} className="text-xs font-mono">{telemetry.points.length} points @ 2hr</div>
+                  </div>
                   <TimelineBar
                     points={telemetry.points}
-                    onScrub={setTimelineIdx}
+                    onScrub={(i) => { setTimelineIdx(i); setPlaying(false); }}
                     currentIdx={timelineIdx}
                   />
+                  {statusBanner && (
+                    <div data-testid="status-banner" className="mt-2 p-2 rounded text-sm font-bold" style={{ background: '#EF44441A', color: '#EF4444' }}>
+                      {statusBanner}
+                    </div>
+                  )}
                   <div className="mt-3 flex justify-between items-center">
                     <span className="text-xs font-mono" style={{ color: '#F8FAFC60' }}>
                       Scrub: T+{(timelineIdx * 2).toString().padStart(3, '0')}h — {telemetry.points[timelineIdx]?.t ?? '--'}

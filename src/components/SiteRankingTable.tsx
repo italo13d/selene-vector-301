@@ -102,6 +102,13 @@ export const SiteRankingTable: React.FC<SiteRankingTableProps> = ({
             Reset
           </button>
         </div>
+        {/* Preset buttons */}
+        <div className="flex gap-2 mb-3">
+          <button onClick={() => onWeightsChange({ solar_uptime_pct: 0.35, dte_uptime_pct: 0.25, max_slope_deg: 0.25, psr_distance_km: 0.15 })} className="px-2 py-1 rounded text-xs" aria-label="Preset Artemis Balanced">Artemis Balanced</button>
+          <button onClick={() => onWeightsChange({ solar_uptime_pct: 0.55, dte_uptime_pct: 0.20, max_slope_deg: 0.15, psr_distance_km: 0.10 })} className="px-2 py-1 rounded text-xs" aria-label="Preset Power Survival">Power Survival</button>
+          <button onClick={() => onWeightsChange({ solar_uptime_pct: 0.20, dte_uptime_pct: 0.20, max_slope_deg: 0.45, psr_distance_km: 0.15 })} className="px-2 py-1 rounded text-xs" aria-label="Preset CSA Rover Safety">CSA Rover Safety</button>
+          <button onClick={() => onWeightsChange({ solar_uptime_pct: 0.25, dte_uptime_pct: 0.15, max_slope_deg: 0.20, psr_distance_km: 0.40 })} className="px-2 py-1 rounded text-xs" aria-label="Preset Ice Prospecting">Ice Prospecting</button>
+        </div>
         {Math.abs(totalWeight - 1) > 0.01 && (
           <div className="text-xs font-mono mb-2 px-2 py-1 rounded" style={{ background: '#EF44441A', color: '#EF4444', border: '1px solid #EF444440' }}>
             ⚠ Weights sum to {(totalWeight * 100).toFixed(0)}% (should be 100%)

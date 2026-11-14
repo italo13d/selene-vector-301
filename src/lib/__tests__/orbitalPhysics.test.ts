@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { getSiteTelemetry, getCustomCoordTelemetry, getAllSites } from '../../lib/orbitalPhysics';
 import sitesData from '../../data/sites.json';
+import { computeBatteryTrajectory } from '../../lib/orbitalPhysics';
 
 describe('Orbital physics invariants', () => {
   it('Shackleton rim (+0d) should be sunlit: high solar and moderate DTE uptime', () => {
@@ -60,5 +61,19 @@ describe('Orbital physics invariants', () => {
     }
     // Ensure we found at least one eclipsed-case to validate
     expect(found).toBeTruthy();
+  });
+
+  it('REQ-CSA-02: battery trajectory drops below 20% after >24h continuous eclipse', () => {
+    // Create synthetic telemetry points with 13 consecutive eclipse intervals (13*2=26h)
+    const points: any[] = [];
+    for (let i = 0; i < 169; i++) {
+      points.push({ sun_visible: i < 5 ? true : false, solar_eff_pct: i < 5 ? 50 : 0 });
+    }
+    const soc = computeBatteryTrajectory(points as any, 85);
+    // After 13 eclipse intervals, SoC should have fallen below 20
+    // Find index at which eclipse stretch length >=13 starts
+    const start = 5;
+    const idx = start + 13 - 1;
+    expect(soc[idx]).toBeLessThan(20);
   });
 });

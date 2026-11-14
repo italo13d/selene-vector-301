@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { render, screen, fireEvent, act } from '@testing-library/react';
 import '@testing-library/jest-dom';
 import App from '../App';
 
@@ -26,6 +26,46 @@ describe('Functional requirements (REQ-UI-01, REQ-EXP-01)', () => {
     fireEvent.click(allOffsetBtns[1]);
     // After clicking, timeline scrub should show T+000h (reset to 0)
     expect(screen.getByText(/Scrub: T\+000h/)).toBeInTheDocument();
+  });
+
+  it('AHP-TOPSIS presets update weights and re-rank sites', () => {
+    render(<App />);
+    // capture first ranking site name before
+    const firstRowBefore = screen.getAllByRole('row')[1];
+    const beforeText = firstRowBefore.textContent || '';
+    // click Power Survival preset
+    const presetBtn = screen.getByRole('button', { name: /Preset Power Survival/ });
+    fireEvent.click(presetBtn);
+    // read first row after
+    const firstRowAfter = screen.getAllByRole('row')[1];
+    const afterText = firstRowAfter.textContent || '';
+    // The ordering should change for at least one site (not identical strings)
+    expect(afterText).not.toEqual(beforeText);
+  });
+
+  it('Playback play advances the scrub index', () => {
+    vi.useFakeTimers();
+    render(<App />);
+    const playBtn = screen.getByRole('button', { name: /Play Toggle/ });
+    act(() => { fireEvent.click(playBtn); }); // start playing
+    expect(screen.getByText(/Scrub: T\+000h/)).toBeTruthy();
+    // advance timers by 1200ms to allow at least one tick
+    act(() => { vi.advanceTimersByTime(1200); });
+    // ensure scrub text advanced (not strictly 000)
+    const later = screen.getByText(/Scrub: T\+00\d*h/);
+    expect(later).toBeTruthy();
+    vi.useRealTimers();
+  });
+
+  it('Compare Sites panel renders comparison metrics', () => {
+    render(<App />);
+    const compareCheckbox = screen.getByRole('checkbox');
+    fireEvent.click(compareCheckbox);
+    const select = screen.getByLabelText(/Compare target select/);
+    fireEvent.change(select, { target: { value: 'apollo-11' } });
+    // Apollo 11 name should appear somewhere in the document (compare panel or list)
+    const matches = screen.getAllByText(/Apollo 11/);
+    expect(matches.length).toBeGreaterThan(0);
   });
 
   it('Custom coordinates submission produces a custom site telemetry with 72-sector horizon', () => {

@@ -60,6 +60,23 @@ REQ-EXP-01 — Mission Dossier Export
   - The application shall support exporting ranking CSV, ranking JSON, and per-site timeline CSV. Exports must be non-empty, validly formatted, and include metadata: generation timestamp, launch offset, site metadata, AHP-TOPSIS scores, CSA flags, visibility metrics.
   - Trace: Functional tests must stub the download mechanism and assert generated filenames and content presence.
 
+REQ-UI-02 — Mission Orbital Playback
+  - Description: Provide an interactive playback control for the 14-day timeline with Play/Pause and speed selections (1x, 5x, 20x). Playback advances the timeline scrub index smoothly and wraps at the window end.
+  - Behaviour: While playing, the PolarHorizonChart, CURRENT TELEMETRY, countdowns, and battery SoC must update live. When a transition into eclipse or DTE loss occurs, display a Mission Control banner.
+  - Trace: UI functional tests must exercise Play/Pause, speed changes, and assert the Scrub display advances and the status banner appears on transitions.
+
+REQ-CSA-02 — CSA Rover Battery State-Of-Charge Model
+  - Description: Compute a deterministic 169-point battery SoC trajectory per telemetry window starting at 85% SoC. When sun_visible, the battery shall charge proportionally to solar_eff_pct; when eclipsed, the battery shall discharge at ~3.2% per hour. Eclipses exceeding 24 hours must allow SoC to fall below 20% (critical threshold).
+  - Trace: Unit tests must validate the computeBatteryTrajectory function for long eclipse sequences and the UI must render a Rover Battery SoC gauge and a critical warning below 20%.
+
+REQ-TOPSIS-02 — AHP-TOPSIS Mission Profile Presets
+  - Description: Provide one-click preset weight profiles above the sliders: Artemis Balanced, Power Survival, CSA Rover Safety, Ice Prospecting. Applying a preset updates weights and re-ranks sites immediately.
+  - Trace: Tests must click presets and assert ordering differences and that weights are applied.
+
+REQ-UI-03 — Side-by-Side Site Comparison Panel
+  - Description: Provide a Compare Sites drawer allowing side-by-side comparison of the selected site and a chosen comparator across Solar Uptime, DTE Uptime, Max Eclipse, Terrain Slope, CSA Veto, and AHP-TOPSIS C* score.
+  - Trace: Functional tests must open the comparison, select a comparator, and assert displayed comparison metrics.
+
 Traceability matrix
   - All test names and test files must include at least one REQ-* identifier in their description to make mapping between tests and requirements explicit.
 
