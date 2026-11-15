@@ -28,6 +28,28 @@ describe('Functional requirements (REQ-UI-01, REQ-EXP-01)', () => {
     expect(screen.getByText(/Scrub: T\+000h/)).toBeInTheDocument();
   });
 
+  it('REQ-UX-02: countdown cards use human-readable duration readouts and clear subtitles', () => {
+    render(<App />);
+
+    expect(screen.queryByText('hrs:min')).not.toBeInTheDocument();
+    expect(screen.queryByText(/T-\d{3}:\d{2}/)).not.toBeInTheDocument();
+
+    const durationReadouts = screen.getAllByText(/^(\d+h \d{2}m|\d+m)$/);
+    expect(durationReadouts.length).toBeGreaterThanOrEqual(2);
+
+    expect(screen.getByText(/Until Sun dips behind horizon|Sunlight returns in/)).toBeInTheDocument();
+    expect(screen.getByText(/Until Earth dips below horizon \(LOS\)|Direct radio link returns in/)).toBeInTheDocument();
+  });
+
+  it('REQ-UX-01 / REQ-UX-02: explorer mode countdown subtitles switch to plain-language guidance', () => {
+    render(<App />);
+
+    fireEvent.click(screen.getByRole('button', { name: /Explorer/i }));
+
+    expect(screen.getByText(/Daylight remaining before lunar night|In shadow behind terrain/)).toBeInTheDocument();
+    expect(screen.getByText(/Direct-to-Earth communication window left|Horizon blocks Earth/)).toBeInTheDocument();
+  });
+
   it('AHP-TOPSIS presets update weights and re-rank sites', () => {
     render(<App />);
     // capture first ranking site name before

@@ -124,6 +124,59 @@ function getCountdownTransitionHours(
   return null;
 }
 
+function formatCountdownDuration(hours: number): string {
+  const totalMinutes = Math.max(0, Math.floor(Math.abs(hours) * 60));
+  const durationHours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
+
+  if (durationHours === 0) {
+    return `${minutes}m`;
+  }
+
+  return `${durationHours}h ${minutes.toString().padStart(2, '0')}m`;
+}
+
+function getCountdownLabel(body: 'sun' | 'earth', isVisible: boolean): string {
+  if (body === 'sun') {
+    return isVisible
+      ? 'T-MINUS SUNSET'
+      : 'T-MINUS SUNRISE · IN ECLIPSE';
+  }
+
+  return isVisible
+    ? 'T-MINUS EARTHSET'
+    : 'T-MINUS EARTHRISE · NO SIGNAL';
+}
+
+function getCountdownSubtitle(
+  body: 'sun' | 'earth',
+  isVisible: boolean,
+  mode: AppMode,
+  durationLabel: string
+): string {
+  if (body === 'sun') {
+    if (!isVisible) {
+      return mode === 'explorer'
+        ? `In shadow behind terrain — Sun rises in ${durationLabel}`
+        : `Sunlight returns in ${durationLabel}`;
+    }
+
+    return mode === 'explorer'
+      ? 'Daylight remaining before lunar night'
+      : 'Until Sun dips behind horizon';
+  }
+
+  if (!isVisible) {
+    return mode === 'explorer'
+      ? `Horizon blocks Earth — radio returns in ${durationLabel}`
+      : `Direct radio link returns in ${durationLabel}`;
+  }
+
+  return mode === 'explorer'
+    ? 'Direct-to-Earth communication window left'
+    : 'Until Earth dips below horizon (LOS)';
+}
+
 // Lunar horizon emblem SVG
 const LunarEmblem: React.FC = () => (
   <svg width="40" height="40" viewBox="0 0 40 40" aria-hidden="true" focusable="false">
@@ -149,12 +202,12 @@ const LunarEmblem: React.FC = () => (
 const TMinusCard: React.FC<{
   label: string;
   hours: number;
+  subtitle: string;
   color: string;
   icon: React.ReactNode;
   alertState?: CountdownAlertState;
-}> = ({ label, hours, color, icon, alertState = 'nominal' }) => {
-  const h = Math.floor(Math.abs(hours));
-  const m = Math.floor((Math.abs(hours) - h) * 60);
+}> = ({ label, hours, subtitle, color, icon, alertState = 'nominal' }) => {
+  const durationLabel = formatCountdownDuration(hours);
 
   const palette = alertState === 'critical'
     ? {
@@ -190,9 +243,9 @@ const TMinusCard: React.FC<{
         {label}
       </div>
       <div className="font-mono font-bold text-2xl" style={{ color: palette.value, letterSpacing: '0.08em' }}>
-        T-{h.toString().padStart(3, '0')}:{m.toString().padStart(2, '0')}
+        {durationLabel}
       </div>
-      <div className="text-xs font-mono" style={{ color: '#F8FAFC40' }}>hrs:min</div>
+      <div className="text-xs" style={{ color: '#F8FAFCB3' }}>{subtitle}</div>
     </div>
   );
 };
@@ -671,6 +724,11 @@ export default function App() {
     const tMinusEarthset = getCountdownTransitionHours(points, startIndex, 'earth_visible', true, false, horizonProfile, 'earth') ?? remainingWindowHours;
     const tMinusEarthrise = getCountdownTransitionHours(points, startIndex, 'earth_visible', false, true, horizonProfile, 'earth') ?? remainingWindowHours;
 
+    const sunHours = point.sun_visible ? tMinusSunset : tMinusSunrise;
+    const earthHours = point.earth_visible ? tMinusEarthset : tMinusEarthrise;
+    const sunDurationLabel = formatCountdownDuration(sunHours);
+    const earthDurationLabel = formatCountdownDuration(earthHours);
+
     const sunState: CountdownAlertState = point.sun_visible
       ? (tMinusSunset < 12 ? 'warning' : 'nominal')
       : 'critical';
@@ -680,17 +738,19 @@ export default function App() {
 
     return {
       sun: {
-        label: point.sun_visible ? 'T-MINUS SUNSET' : 'T-MINUS SUNRISE',
-        hours: point.sun_visible ? tMinusSunset : tMinusSunrise,
+        label: getCountdownLabel('sun', point.sun_visible),
+        hours: sunHours,
+        subtitle: getCountdownSubtitle('sun', point.sun_visible, mode, sunDurationLabel),
         state: sunState,
       },
       earth: {
-        label: point.earth_visible ? 'T-MINUS EARTHSET' : 'T-MINUS EARTHRISE',
-        hours: point.earth_visible ? tMinusEarthset : tMinusEarthrise,
+        label: getCountdownLabel('earth', point.earth_visible),
+        hours: earthHours,
+        subtitle: getCountdownSubtitle('earth', point.earth_visible, mode, earthDurationLabel),
         state: earthState,
       },
     };
-  }, [telemetry, timelineIdx]);
+  }, [telemetry, timelineIdx, mode]);
 
   const batteryCriticalInWindow = useMemo(() => {
     if (!telemetry) return false;
@@ -1473,8 +1533,9 @@ export default function App() {
                 <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-6">
                   <div>
                     <TMinusCard
-                      label={countdownStatus?.sun.label ?? 'T-MINUS SUNSET'}
+                      label={countdownStatus?.sun.label ?? getCountdownLabel('sun', true)}
                       hours={countdownStatus?.sun.hours ?? 0}
+                      subtitle={countdownStatus?.sun.subtitle ?? getCountdownSubtitle('sun', true, mode, formatCountdownDuration(0))}
                       color="#F59E0B"
                       alertState={countdownStatus?.sun.state ?? 'nominal'}
                       icon={<Sun size={12} />}
@@ -1482,8 +1543,9 @@ export default function App() {
                   </div>
                   <div>
                     <TMinusCard
-                      label={countdownStatus?.earth.label ?? 'T-MINUS EARTHSET'}
+                      label={countdownStatus?.earth.label ?? getCountdownLabel('earth', true)}
                       hours={countdownStatus?.earth.hours ?? 0}
+                      subtitle={countdownStatus?.earth.subtitle ?? getCountdownSubtitle('earth', true, mode, formatCountdownDuration(0))}
                       color="#06B6D4"
                       alertState={countdownStatus?.earth.state ?? 'nominal'}
                       icon={<Globe size={12} />}
@@ -1689,6 +1751,25 @@ export default function App() {
                 <p className="text-sm" style={{ color: '#F8FAFC60' }}>
                   Plain-language insights into lunar polar site advantages for the 2026 Artemis missions.
                 </p>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <TMinusCard
+                  label={countdownStatus?.sun.label ?? getCountdownLabel('sun', true)}
+                  hours={countdownStatus?.sun.hours ?? 0}
+                  subtitle={countdownStatus?.sun.subtitle ?? getCountdownSubtitle('sun', true, mode, formatCountdownDuration(0))}
+                  color="#F59E0B"
+                  alertState={countdownStatus?.sun.state ?? 'nominal'}
+                  icon={<Sun size={12} />}
+                />
+                <TMinusCard
+                  label={countdownStatus?.earth.label ?? getCountdownLabel('earth', true)}
+                  hours={countdownStatus?.earth.hours ?? 0}
+                  subtitle={countdownStatus?.earth.subtitle ?? getCountdownSubtitle('earth', true, mode, formatCountdownDuration(0))}
+                  color="#06B6D4"
+                  alertState={countdownStatus?.earth.state ?? 'nominal'}
+                  icon={<Globe size={12} />}
+                />
               </div>
 
               {/* Mobile launch selector for explorer mode */}
