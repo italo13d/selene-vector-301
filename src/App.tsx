@@ -1,6 +1,6 @@
 import React, { useState, useMemo, useCallback, useEffect, useRef } from 'react';
 import {
-  Satellite, Radio, Zap, Mountain, Clock, Sun, Globe, ChevronRight,
+  Satellite, Radio, Zap, Clock, Sun, Globe, ChevronRight,
   MapPin, Gauge, Activity, Eye, EyeOff
 } from 'lucide-react';
 import { PolarHorizonChart } from './components/PolarHorizonChart';
@@ -235,6 +235,7 @@ export default function App() {
   const [customCoords, setCustomCoords] = useState<CustomCoordsState>({
     lat: '', lon: '', alt_km: '', active: false,
   });
+  const [siteQuery, setSiteQuery] = useState('');
 
   const sites = useMemo(() => getAllSites(), []);
 
@@ -421,8 +422,18 @@ export default function App() {
           {/* Site selector */}
           <div>
             <div className="text-xs font-mono mb-2" style={{ color: '#F8FAFC60' }}>LANDING SITE</div>
-            <div className="space-y-1">
-              {sites.map((site) => {
+            <div style={{ marginBottom: 8 }}>
+              <input
+                aria-label="Filter sites"
+                placeholder="Filter sites..."
+                value={siteQuery}
+                onChange={(e) => setSiteQuery(e.target.value)}
+                className="w-full px-2 py-1 rounded text-xs font-mono"
+                style={{ background: '#090D16', border: '1px solid #1E293B', color: '#F8FAFC', outline: 'none' }}
+              />
+            </div>
+            <div className="max-h-[290px] overflow-y-auto space-y-1">
+              {sites.filter((s) => s.name.toLowerCase().includes(siteQuery.toLowerCase()) || s.id.toLowerCase().includes(siteQuery.toLowerCase())).map((site) => {
                 const isSelected = site.id === selectedSiteId && !customCoords.active;
                 const isVetoed = site.max_slope_deg > 15;
                 return (
@@ -639,40 +650,44 @@ export default function App() {
                 )}
               </div>
 
-              {/* Two-column: polar chart + telemetry */}
-              <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
-                {/* Polar chart */}
-                <div>
-                  {telemetry && (
-                    <PolarHorizonChart
-                      site={displaySite as SiteData}
-                      points={telemetry.points}
-                      currentPointIndex={timelineIdx}
-                    />
-                  )}
-                </div>
-                <div>
-                  <LunarOrbitalGlobe
-                    sites={sites}
-                    selectedSiteId={selectedSiteId}
-                    onSiteSelect={handleSiteSelect}
-                    customLat={customCoords.active ? parseFloat(customCoords.lat || '0') : undefined}
-                    customLon={customCoords.active ? parseFloat(customCoords.lon || '0') : undefined}
-                    timelineIdx={timelineIdx}
-                    telemetryPoints={telemetry?.points ?? []}
-                  />
+              {/* Mission Control: Polar chart + Lunar Globe card */}
+              <div className="space-y-6">
+                <div className="p-4 rounded-lg" style={{ background: '#131B2E', border: '1px solid #1E293B' }}>
+                  <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
+                    <div>
+                      {telemetry && (
+                        <PolarHorizonChart
+                          site={displaySite as SiteData}
+                          points={telemetry.points}
+                          currentPointIndex={timelineIdx}
+                        />
+                      )}
+                    </div>
+                    <div>
+                      <LunarOrbitalGlobe
+                        sites={sites}
+                        selectedSiteId={selectedSiteId}
+                        onSiteSelect={handleSiteSelect}
+                        customLat={customCoords.active ? parseFloat(customCoords.lat || '0') : undefined}
+                        customLon={customCoords.active ? parseFloat(customCoords.lon || '0') : undefined}
+                        timelineIdx={timelineIdx}
+                        telemetryPoints={telemetry?.points ?? []}
+                      />
+                    </div>
+                  </div>
                 </div>
 
-                {/* Operational telemetry */}
-                <div className="space-y-4">
-                  {/* T-Minus cards */}
-                  <div className="grid grid-cols-2 gap-3">
+                {/* Telemetry + Countdown cards across full width */}
+                <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-6">
+                  <div>
                     <TMinusCard
                       label={telemetry && telemetry.sun_countdown.state === 'SUNLIT' ? 'T-MINUS SUNSET' : 'T-MINUS SUNRISE'}
                       hours={telemetry ? (telemetry.sun_countdown.state === 'SUNLIT' ? telemetry.sun_countdown.t_minus_sunset_hours : (telemetry.sun_countdown.t_minus_sunrise_hours ?? 0)) : 0}
                       color="#F59E0B"
                       icon={<Sun size={12} />}
                     />
+                  </div>
+                  <div>
                     <TMinusCard
                       label={telemetry && telemetry.dte_countdown.state === 'DTE_ACTIVE' ? 'T-MINUS EARTHSET' : 'T-MINUS EARTHRISE'}
                       hours={telemetry ? (telemetry.dte_countdown.state === 'DTE_ACTIVE' ? telemetry.dte_countdown.t_minus_earthset_hours : (telemetry.dte_countdown.t_minus_earthrise_hours ?? 0)) : 0}
@@ -680,101 +695,95 @@ export default function App() {
                       icon={<Globe size={12} />}
                     />
                   </div>
-
-                  {/* Current point telemetry */}
-                  {currentPoint && (
-                    <div className="p-4 rounded-lg" style={{ background: '#131B2E', border: '1px solid #1E293B' }}>
-                      <div className="text-xs font-mono mb-3" style={{ color: '#F8FAFC60' }}>CURRENT TELEMETRY — {currentPoint.t}</div>
-                      <div className="grid grid-cols-2 gap-3">
-                        <div>
-                          <div className="text-xs font-mono mb-1" style={{ color: '#F8FAFC60' }}>SOLAR EFFICIENCY</div>
-                          <div className="font-mono font-bold text-2xl" style={{ color: '#F59E0B' }}>
-                            {currentPoint.solar_eff_pct.toFixed(1)}%
+                  <div>
+                    {/* Current point telemetry */}
+                    {currentPoint ? (
+                      <div className="p-4 rounded-lg" style={{ background: '#131B2E', border: '1px solid #1E293B' }}>
+                        <div className="text-xs font-mono mb-3" style={{ color: '#F8FAFC60' }}>CURRENT TELEMETRY — {currentPoint.t}</div>
+                        <div className="grid grid-cols-2 gap-3">
+                          <div>
+                            <div className="text-xs font-mono mb-1" style={{ color: '#F8FAFC60' }}>SOLAR EFFICIENCY</div>
+                            <div className="font-mono font-bold text-2xl" style={{ color: '#F59E0B' }}>
+                              {currentPoint.solar_eff_pct.toFixed(1)}%
+                            </div>
+                            <div className="w-full h-1.5 rounded-full mt-1" style={{ background: '#1E293B' }}>
+                              <div
+                                className="h-full rounded-full transition-all"
+                                style={{ width: `${currentPoint.solar_eff_pct}%`, background: '#F59E0B' }}
+                              />
+                            </div>
                           </div>
-                          <div className="w-full h-1.5 rounded-full mt-1" style={{ background: '#1E293B' }}>
-                            <div
-                              className="h-full rounded-full transition-all"
-                              style={{ width: `${currentPoint.solar_eff_pct}%`, background: '#F59E0B' }}
-                            />
+                          <div>
+                            <div className="text-xs font-mono mb-1" style={{ color: '#F8FAFC60' }}>SUN STATUS</div>
+                            <div className="flex items-center gap-2">
+                              {currentPoint.sun_visible
+                                ? <Eye size={16} style={{ color: '#F59E0B' }} />
+                                : <EyeOff size={16} style={{ color: '#EF4444' }} />}
+                              <span className="font-mono font-bold" style={{ color: currentPoint.sun_visible ? '#F59E0B' : '#EF4444' }}>
+                                {currentPoint.sun_visible ? 'VISIBLE' : 'ECLIPSED'}
+                              </span>
+                            </div>
+                            <div className="mt-1 text-xs font-mono" style={{ color: '#F8FAFC60' }}>
+                              Az: {currentPoint.sun_az.toFixed(1)}° El: {currentPoint.sun_el.toFixed(2)}°
+                            </div>
                           </div>
-                        </div>
-                        <div>
-                          <div className="text-xs font-mono mb-1" style={{ color: '#F8FAFC60' }}>SUN STATUS</div>
-                          <div className="flex items-center gap-2">
-                            {currentPoint.sun_visible
-                              ? <Eye size={16} style={{ color: '#F59E0B' }} />
-                              : <EyeOff size={16} style={{ color: '#EF4444' }} />}
-                            <span className="font-mono font-bold" style={{ color: currentPoint.sun_visible ? '#F59E0B' : '#EF4444' }}>
-                              {currentPoint.sun_visible ? 'VISIBLE' : 'ECLIPSED'}
-                            </span>
+                          <div>
+                            <div className="text-xs font-mono mb-1" style={{ color: '#F8FAFC60' }}>EARTH / DTE</div>
+                            <div className="flex items-center gap-2">
+                              {currentPoint.earth_visible
+                                ? <Radio size={16} style={{ color: '#06B6D4' }} />
+                                : <Radio size={16} style={{ color: '#EF4444' }} />}
+                              <span className="font-mono font-bold" style={{ color: currentPoint.earth_visible ? '#06B6D4' : '#EF4444' }}>
+                                {currentPoint.earth_visible ? 'LINK ACTIVE' : 'NO SIGNAL'}
+                              </span>
+                            </div>
+                            <div className="mt-1 text-xs font-mono" style={{ color: '#F8FAFC60' }}>
+                              Az: {currentPoint.earth_az.toFixed(1)}° El: {currentPoint.earth_el.toFixed(2)}°
+                            </div>
                           </div>
-                          <div className="mt-1 text-xs font-mono" style={{ color: '#F8FAFC60' }}>
-                            Az: {currentPoint.sun_az.toFixed(1)}° El: {currentPoint.sun_el.toFixed(2)}°
-                          </div>
-                        </div>
-                        <div>
-                          <div className="text-xs font-mono mb-1" style={{ color: '#F8FAFC60' }}>EARTH / DTE</div>
-                          <div className="flex items-center gap-2">
-                            {currentPoint.earth_visible
-                              ? <Radio size={16} style={{ color: '#06B6D4' }} />
-                              : <Radio size={16} style={{ color: '#EF4444' }} />}
-                            <span className="font-mono font-bold" style={{ color: currentPoint.earth_visible ? '#06B6D4' : '#EF4444' }}>
-                              {currentPoint.earth_visible ? 'LINK ACTIVE' : 'NO SIGNAL'}
-                            </span>
-                          </div>
-                          <div className="mt-1 text-xs font-mono" style={{ color: '#F8FAFC60' }}>
-                            Az: {currentPoint.earth_az.toFixed(1)}° El: {currentPoint.earth_el.toFixed(2)}°
-                          </div>
-                        </div>
-                        <div>
-                          <div className="text-xs font-mono mb-1" style={{ color: '#F8FAFC60' }}>ROVER BATTERY (SoC)</div>
-                          <div className="font-mono font-bold text-2xl" style={{ color: currentPoint.battery_soc_pct && currentPoint.battery_soc_pct < 20 ? '#EF4444' : '#22c55e' }}>
-                            {currentPoint.battery_soc_pct?.toFixed(1) ?? '--'}%
-                          </div>
-                          <div className="w-full h-2 rounded-full mt-2" style={{ background: '#1E293B' }}>
-                            <div
-                              className="h-full rounded-full transition-all"
-                              style={{ width: `${currentPoint.battery_soc_pct ?? 0}%`, background: currentPoint.battery_soc_pct && currentPoint.battery_soc_pct < 20 ? '#EF4444' : '#22c55e' }}
-                            />
-                          </div>
-                          {currentPoint.battery_soc_pct !== undefined && currentPoint.battery_soc_pct < 20 && (
-                            <div className="mt-1 text-xs font-mono" style={{ color: '#EF4444' }}>CRITICAL — Survival threshold breached</div>
-                          )}
-                        </div>
-                        <div>
-                          <div className="text-xs font-mono mb-1" style={{ color: '#F8FAFC60' }}>TERRAIN SLOPE</div>
-                          <div className="flex items-center gap-2">
-                            <Mountain size={16} style={{ color: displaySite.max_slope_deg > 15 ? '#EF4444' : '#22c55e' }} />
-                            <span className="font-mono font-bold" style={{ color: displaySite.max_slope_deg > 15 ? '#EF4444' : '#22c55e' }}>
-                              {displaySite.max_slope_deg.toFixed(1)}°
-                            </span>
-                          </div>
-                          <div className="mt-1 text-xs font-mono" style={{ color: displaySite.max_slope_deg > 15 ? '#EF4444' : '#F8FAFC60' }}>
-                            {displaySite.max_slope_deg > 15 ? '⛔ CSA SAFETY VETO' : '✓ CSA SAFE (< 15°)'}
+                          <div>
+                            <div className="text-xs font-mono mb-1" style={{ color: '#F8FAFC60' }}>ROVER BATTERY (SoC)</div>
+                            <div className="font-mono font-bold text-2xl" style={{ color: currentPoint.battery_soc_pct && currentPoint.battery_soc_pct < 20 ? '#EF4444' : '#22c55e' }}>
+                              {currentPoint.battery_soc_pct?.toFixed(1) ?? '--'}%
+                            </div>
+                            <div className="w-full h-2 rounded-full mt-2" style={{ background: '#1E293B' }}>
+                              <div
+                                className="h-full rounded-full transition-all"
+                                style={{ width: `${currentPoint.battery_soc_pct ?? 0}%`, background: currentPoint.battery_soc_pct && currentPoint.battery_soc_pct < 20 ? '#EF4444' : '#22c55e' }}
+                              />
+                            </div>
+                            {currentPoint.battery_soc_pct !== undefined && currentPoint.battery_soc_pct < 20 && (
+                              <div className="mt-1 text-xs font-mono" style={{ color: '#EF4444' }}>CRITICAL — Survival threshold breached</div>
+                            )}
                           </div>
                         </div>
                       </div>
-                    </div>
-                  )}
-
-                  {/* Mission summary */}
-                  <div className="p-4 rounded-lg" style={{ background: '#131B2E', border: '1px solid #1E293B' }}>
-                    <div className="text-xs font-mono mb-3" style={{ color: '#F8FAFC60' }}>MISSION WINDOW SUMMARY</div>
-                    <div className="grid grid-cols-2 gap-3">
-                      {[
-                        { label: 'Solar Uptime', value: `${telemetry?.solar_uptime_pct.toFixed(1) ?? '--'}%`, color: '#F59E0B', icon: <Zap size={12} /> },
-                        { label: 'DTE Uptime', value: `${telemetry?.dte_uptime_pct.toFixed(1) ?? '--'}%`, color: '#06B6D4', icon: <Satellite size={12} /> },
-                        { label: 'Max Eclipse', value: `${telemetry?.max_continuous_eclipse_hours.toFixed(0) ?? '--'}h`, color: telemetry && telemetry.max_continuous_eclipse_hours > 24 ? '#EF4444' : '#F8FAFC', icon: <Clock size={12} /> },
-                        { label: 'PSR Distance', value: `${displaySite.psr_distance_km.toFixed(1)} km`, color: '#3B82F6', icon: <Activity size={12} /> },
-                      ].map(({ label, value, color, icon }) => (
-                        <div key={label} className="flex items-center gap-2">
-                          <span style={{ color }}>{icon}</span>
-                          <div>
-                            <div className="text-xs font-mono" style={{ color: '#F8FAFC40' }}>{label}</div>
-                            <div className="font-mono font-bold text-sm" style={{ color }}>{value}</div>
+                    ) : (
+                      <div className="p-4 rounded-lg" style={{ background: '#131B2E', border: '1px solid #1E293B' }}>
+                        <div className="text-xs font-mono" style={{ color: '#F8FAFC60' }}>No telemetry available</div>
+                      </div>
+                    )}
+                  </div>
+                  <div>
+                    {/* Mission summary */}
+                    <div className="p-4 rounded-lg" style={{ background: '#131B2E', border: '1px solid #1E293B' }}>
+                      <div className="text-xs font-mono mb-3" style={{ color: '#F8FAFC60' }}>MISSION WINDOW SUMMARY</div>
+                      <div className="grid grid-cols-2 gap-3">
+                        {[
+                          { label: 'Solar Uptime', value: `${telemetry?.solar_uptime_pct.toFixed(1) ?? '--'}%`, color: '#F59E0B', icon: <Zap size={12} /> },
+                          { label: 'DTE Uptime', value: `${telemetry?.dte_uptime_pct.toFixed(1) ?? '--'}%`, color: '#06B6D4', icon: <Satellite size={12} /> },
+                          { label: 'Max Eclipse', value: `${telemetry?.max_continuous_eclipse_hours.toFixed(0) ?? '--'}h`, color: telemetry && telemetry.max_continuous_eclipse_hours > 24 ? '#EF4444' : '#F8FAFC', icon: <Clock size={12} /> },
+                          { label: 'PSR Distance', value: `${displaySite.psr_distance_km.toFixed(1)} km`, color: '#3B82F6', icon: <Activity size={12} /> },
+                        ].map(({ label, value, color, icon }) => (
+                          <div key={label} className="flex items-center gap-2">
+                            <span style={{ color }}>{icon}</span>
+                            <div>
+                              <div className="text-xs font-mono" style={{ color: '#F8FAFC40' }}>{label}</div>
+                              <div className="font-mono font-bold text-sm" style={{ color }}>{value}</div>
+                            </div>
                           </div>
-                        </div>
-                      ))}
+                        ))}
+                      </div>
                     </div>
                   </div>
                 </div>

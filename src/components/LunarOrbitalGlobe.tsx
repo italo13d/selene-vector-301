@@ -1,5 +1,5 @@
 import React, { useEffect, useRef } from 'react';
-import { latLonToCartesian } from '../lib/lunarGlobeMath';
+import { latLonToCartesian, createOrGetLunarTextureCanvases, lunarTextureCache, computeBodyFixedDirection } from '../lib/lunarGlobeMath';
 import type { SiteData } from '../lib/orbitalPhysics';
 import * as THREE from 'three';
 // Note: avoid direct typed import of three/examples jsm modules to keep build simple
@@ -16,6 +16,17 @@ interface Props {
 
 export const LunarOrbitalGlobe: React.FC<Props> = ({ sites, selectedSiteId, onSiteSelect, customLat, customLon, timelineIdx = 0, telemetryPoints = [] }) => {
   const mountRef = useRef<HTMLDivElement | null>(null);
+  // Module-level cached THREE.TextureLoader singleton (shared across hot-reloads)
+  const sharedLoader = (globalThis as any).__selene_moon_texture_loader as THREE.TextureLoader | undefined;
+  if (!sharedLoader) {
+    try {
+      (globalThis as any).__selene_moon_texture_loader = new THREE.TextureLoader();
+    } catch (e) {
+      // ignore loader creation failures in restricted/test environments
+    }
+  }
+  // expose preset setter to header buttons outside the renderer effect
+  const setCameraPresetRef = useRef<(p: 'south' | 'global') => void>(() => {});
 
   useEffect(() => {
     const mount = mountRef.current;
@@ -46,9 +57,14 @@ export const LunarOrbitalGlobe: React.FC<Props> = ({ sites, selectedSiteId, onSi
     renderer.setPixelRatio(window.devicePixelRatio || 1);
     mount.appendChild(renderer.domElement);
 
+    const R = 2.0; // sphere radius per requirements
     const scene = new THREE.Scene();
+    // dark space background for contrast
+    scene.background = new THREE.Color('#060911');
     const camera = new THREE.PerspectiveCamera(45, width / height, 0.1, 1000);
-    camera.position.set(0, 0, 3.5);
+    // initial camera matches South Pole Focus per requirement
+    camera.position.set(0, -4.6, 3.8);
+    camera.lookAt(0, -0.35, 0);
 
     // Simple pointer-based orbit controls (no external dependency)
     let isDragging = false;
@@ -56,6 +72,9 @@ export const LunarOrbitalGlobe: React.FC<Props> = ({ sites, selectedSiteId, onSi
     let azimuth = 0;
     let polar = 0.5; // tilt
     const distance = { value: 3.5 };
+    let isCameraTransitioning = true;
+    // spherical target for presets
+    const cameraTarget = { az: azimuth, pol: polar, dist: distance.value };
 
     function updateCamera() {
       const r = distance.value;
@@ -67,24 +86,32 @@ export const LunarOrbitalGlobe: React.FC<Props> = ({ sites, selectedSiteId, onSi
     }
     updateCamera();
 
-    // camera preset targets for smooth lerp transitions
-    const cameraTarget = { az: azimuth, pol: polar, dist: distance.value };
     function setCameraPreset(preset: 'south' | 'global') {
       if (preset === 'south') {
-        // look down at the south pole from moderate distance
-        cameraTarget.az = Math.PI; // arbitrary rotate
-        cameraTarget.pol = -Math.PI / 6; // tilt down toward south
-        cameraTarget.dist = 2.2;
+        // South Pole Focus target cartesian
+        const tx = 0, ty = -4.6, tz = 3.8;
+        const r = Math.sqrt(tx * tx + ty * ty + tz * tz);
+        cameraTarget.az = Math.atan2(tx, tz);
+        cameraTarget.pol = Math.asin(ty / r);
+        cameraTarget.dist = r;
       } else {
-        cameraTarget.az = 0;
-        cameraTarget.pol = 0.5;
-        cameraTarget.dist = 3.5;
+        // Global View [0,0.8,6.2]
+        const tx = 0, ty = 0.8, tz = 6.2;
+        const r = Math.sqrt(tx * tx + ty * ty + tz * tz);
+        cameraTarget.az = Math.atan2(tx, tz);
+        cameraTarget.pol = Math.asin(ty / r);
+        cameraTarget.dist = r;
       }
+      isCameraTransitioning = true;
     }
+    // expose to header
+    setCameraPresetRef.current = setCameraPreset;
 
     function onPointerDown(e: PointerEvent) {
       isDragging = true;
       previousMousePosition = { x: e.clientX, y: e.clientY };
+      // cancel any active camera transition on user interaction
+      isCameraTransitioning = false;
     }
     function onPointerMove(e: PointerEvent) {
       if (!isDragging) return;
@@ -97,7 +124,9 @@ export const LunarOrbitalGlobe: React.FC<Props> = ({ sites, selectedSiteId, onSi
     }
     function onPointerUp() { isDragging = false; }
     function onWheel(e: WheelEvent) {
-      distance.value = Math.max(1.8, Math.min(8, distance.value + e.deltaY * 0.01));
+      distance.value = Math.max(1.8, Math.min(12, distance.value + e.deltaY * 0.01));
+      // cancel preset transition on zoom
+      isCameraTransitioning = false;
       updateCamera();
     }
     renderer.domElement.addEventListener('pointerdown', onPointerDown);
@@ -105,91 +134,66 @@ export const LunarOrbitalGlobe: React.FC<Props> = ({ sites, selectedSiteId, onSi
     window.addEventListener('pointerup', onPointerUp);
     renderer.domElement.addEventListener('wheel', onWheel, { passive: true });
 
-    // Procedural canvas texture for albedo
-    // Create procedural albedo and bump maps only when WebGL is available
-    const texCanvas = document.createElement('canvas');
-    texCanvas.width = 2048;
-    texCanvas.height = 1024;
-    let albedo: THREE.CanvasTexture | undefined;
+    // Use deterministic cached lunar textures (1024x512 equirectangular) so switching sites is instant
+    let albedo: THREE.Texture | undefined;
     let bump: THREE.CanvasTexture | undefined;
     try {
-      const ctx = texCanvas.getContext('2d')!;
-      // base
-      ctx.fillStyle = '#1a1a1a';
-      ctx.fillRect(0, 0, texCanvas.width, texCanvas.height);
-      // draw dark maria patches (ellipses)
-      ctx.fillStyle = '#0f1620';
-      for (let i = 0; i < 30; i++) {
-        const cx = Math.random() * texCanvas.width;
-        const cy = Math.random() * texCanvas.height;
-        const rx = 60 + Math.random() * 220;
-        const ry = rx * (0.4 + Math.random() * 0.9);
-        ctx.beginPath();
-        ctx.ellipse(cx, cy, rx, ry, Math.random() * Math.PI, 0, Math.PI * 2);
-        ctx.fill();
+      const canvases = createOrGetLunarTextureCanvases(1337, 1024, 512);
+      // if three.js textures were created previously, reuse them
+      if ((lunarTextureCache as any).threeAlbedo && (lunarTextureCache as any).threeBump) {
+        albedo = (lunarTextureCache as any).threeAlbedo as THREE.Texture;
+        bump = (lunarTextureCache as any).threeBump as THREE.CanvasTexture;
+      } else {
+        const canvTex = new THREE.CanvasTexture(canvases.albedo as HTMLCanvasElement);
+        const canvBump = new THREE.CanvasTexture(canvases.bump as HTMLCanvasElement);
+        try { (canvTex as any).colorSpace = (THREE as any).SRGBColorSpace ?? THREE.SRGBColorSpace; } catch {}
+        canvTex.needsUpdate = true;
+        albedo = canvTex;
+        bump = canvBump;
+        (lunarTextureCache as any).threeAlbedo = albedo;
+        (lunarTextureCache as any).threeBump = bump;
       }
-      // regolith grain
-      for (let i = 0; i < 6000; i++) {
-        const x = Math.random() * texCanvas.width;
-        const y = Math.random() * texCanvas.height;
-        const v = 180 + Math.random() * 70;
-        ctx.fillStyle = `rgba(${v},${v},${v},${0.06})`;
-        ctx.fillRect(x, y, 1, 1);
-      }
-      // craters (concentric rings), denser near south pole (lower y)
-      for (let i = 0; i < 1200; i++) {
-        const cx = Math.random() * texCanvas.width;
-        // bias toward southern half
-        const cy = Math.pow(Math.random(), 2) * texCanvas.height;
-        const r = 4 + Math.random() * 28;
-        ctx.strokeStyle = `rgba(20,20,20,${0.6 - Math.random() * 0.4})`;
-        ctx.lineWidth = 1 + Math.random() * 1.5;
-        ctx.beginPath();
-        ctx.arc(cx, cy, r, 0, Math.PI * 2);
-        ctx.stroke();
-      }
-      albedo = new THREE.CanvasTexture(texCanvas);
-
-      // bump map: use another canvas
-      const bumpCanvas = document.createElement('canvas');
-      bumpCanvas.width = 1024;
-      bumpCanvas.height = 512;
-      const bctx = bumpCanvas.getContext('2d')!;
-      bctx.fillStyle = '#808080';
-      bctx.fillRect(0, 0, bumpCanvas.width, bumpCanvas.height);
-      for (let i = 0; i < 5000; i++) {
-        const x = Math.random() * bumpCanvas.width;
-        const y = Math.random() * bumpCanvas.height;
-        const shade = 120 + Math.random() * 120;
-        bctx.fillStyle = `rgb(${shade},${shade},${shade})`;
-        bctx.fillRect(x, y, 1, 1);
-      }
-      bump = new THREE.CanvasTexture(bumpCanvas);
     } catch (e) {
-      // fallback to simple color
       albedo = undefined;
       bump = undefined;
     }
 
-    const sphereGeom = new THREE.SphereGeometry(1.6, 128, 128);
-    const sphereMat = new THREE.MeshStandardMaterial({ map: albedo, bumpMap: bump, bumpScale: 0.035, roughness: 0.92, metalness: 0.0 });
+    // Try to load a higher-fidelity NASA texture if available; fallback to procedural canvas
+    let externalAlbedo: THREE.Texture | undefined;
+    try {
+      const loader = (globalThis as any).__selene_moon_texture_loader as THREE.TextureLoader | undefined;
+      if (loader) {
+        // load returns a Texture immediately; it will be updated asynchronously when the image loads
+        externalAlbedo = loader.load('/textures/moon_1024.jpg', (tex) => {
+          try { (tex as any).colorSpace = (THREE as any).SRGBColorSpace ?? THREE.SRGBColorSpace; } catch {}
+          tex.needsUpdate = true;
+        }, undefined, () => {
+          // onError: keep externalAlbedo undefined so procedural is used
+          externalAlbedo = undefined;
+        });
+      }
+    } catch (err) {
+      externalAlbedo = undefined;
+    }
+
+    const sphereGeom = new THREE.SphereGeometry(R, 128, 128);
+    const sphereMat = new THREE.MeshStandardMaterial({ map: externalAlbedo || albedo, bumpMap: bump, bumpScale: 0.055, roughness: 0.92, metalness: 0.02 });
     const moon = new THREE.Mesh(sphereGeom, sphereMat);
     scene.add(moon);
 
-    const light = new THREE.DirectionalLight(0xffffff, 1.0);
-    light.position.set(5, 5, 5);
-    scene.add(light);
-
-    // subtle hemisphere (earthshine) and low ambient
-    const hemi = new THREE.HemisphereLight('#1E3A5F', '#080808', 0.12);
-    scene.add(hemi);
-    const ambient = new THREE.AmbientLight(0x121218, 0.15);
-    scene.add(ambient);
+    // realistic day/night terminator lighting per requirements
+    const sun = new THREE.DirectionalLight('#FFF9ED', 3.2);
+    sun.position.set(10, 6, 3);
+    scene.add(sun);
+    const hemi2 = new THREE.HemisphereLight('#334155', '#0F172A', 0.35);
+    scene.add(hemi2);
+    const ambient2 = new THREE.AmbientLight('#1E293B', 0.28);
+    scene.add(ambient2);
 
     // rim glow: a slightly larger layered sphere with a simple shader that highlights the terminator
     const rimUniforms = {
-      sunDir: { value: new THREE.Vector3().copy(light.position).normalize() },
-      color: { value: new THREE.Color(0x17344a) },
+      sunDir: { value: new THREE.Vector3().copy(new THREE.Vector3(10, 6, 3)).normalize() },
+      color: { value: new THREE.Color(0x060911) },
       intensity: { value: 0.85 },
     };
     const rimMat = new THREE.ShaderMaterial({
@@ -201,7 +205,7 @@ export const LunarOrbitalGlobe: React.FC<Props> = ({ sites, selectedSiteId, onSi
       depthWrite: false,
       side: THREE.BackSide,
     });
-    const rimSphere = new THREE.Mesh(new THREE.SphereGeometry(1.62 * 1.012, 64, 64), rimMat);
+    const rimSphere = new THREE.Mesh(new THREE.SphereGeometry(R * 1.012, 64, 64), rimMat);
     scene.add(rimSphere);
 
     // site markers
@@ -267,7 +271,7 @@ export const LunarOrbitalGlobe: React.FC<Props> = ({ sites, selectedSiteId, onSi
         const sph = new THREE.Mesh(new THREE.SphereGeometry(0.035, 8, 8), new THREE.MeshStandardMaterial({ color: col, emissive: col, emissiveIntensity: 0.9 }));
         sph.position.set(0, 0.28, 0);
         pin.add(sph);
-        const pos = latLonToCartesian(s.lat, s.lon, 1.62);
+        const pos = latLonToCartesian(s.lat, s.lon, R);
         pin.position.set(pos.x, pos.y, pos.z);
         // orient pin to surface normal
         const normal = new THREE.Vector3(pos.x, pos.y, pos.z).normalize();
@@ -327,17 +331,17 @@ export const LunarOrbitalGlobe: React.FC<Props> = ({ sites, selectedSiteId, onSi
     const lineMat = new THREE.LineBasicMaterial({ color: 0x233447, transparent: true, opacity: 0.6 });
     for (let lat = -75; lat <= 75; lat += 15) {
       const points: THREE.Vector3[] = [];
-      for (let lon = -180; lon <= 180; lon += 5) {
-        const p = latLonToCartesian(lat, lon, 1.601);
+        for (let lon = -180; lon <= 180; lon += 5) {
+        const p = latLonToCartesian(lat, lon, R * 1.0005);
         points.push(new THREE.Vector3(p.x, p.y, p.z));
       }
       const geom = new THREE.BufferGeometry().setFromPoints(points);
       graticule.add(new THREE.Line(geom, lineMat));
     }
-    for (let lon = -180; lon <= 180; lon += 15) {
+      for (let lon = -180; lon <= 180; lon += 15) {
       const points: THREE.Vector3[] = [];
       for (let lat = -90; lat <= 90; lat += 2) {
-        const p = latLonToCartesian(lat, lon, 1.601);
+        const p = latLonToCartesian(lat, lon, R * 1.0005);
         points.push(new THREE.Vector3(p.x, p.y, p.z));
       }
       const geom = new THREE.BufferGeometry().setFromPoints(points);
@@ -349,7 +353,7 @@ export const LunarOrbitalGlobe: React.FC<Props> = ({ sites, selectedSiteId, onSi
     const ringLat = -85;
     const ringPoints: THREE.Vector3[] = [];
     for (let lon = -180; lon <= 180; lon += 4) {
-      const p = latLonToCartesian(ringLat, lon, 1.603);
+      const p = latLonToCartesian(ringLat, lon, R * 1.0015);
       ringPoints.push(new THREE.Vector3(p.x, p.y, p.z));
     }
     const ringGeom = new THREE.BufferGeometry().setFromPoints(ringPoints);
@@ -363,7 +367,7 @@ export const LunarOrbitalGlobe: React.FC<Props> = ({ sites, selectedSiteId, onSi
     scene.add(raysGroup);
 
     // helper: placeholder earth direction (approximate) - will be animated/updated if telemetry provides better data
-    const earthDir = new THREE.Vector3(-0.3, 0.05, 0.95).normalize();
+    let earthDir = new THREE.Vector3(-0.3, 0.05, 0.95).normalize();
     // animation loop
     let mounted = true;
     function animate() {
@@ -371,19 +375,43 @@ export const LunarOrbitalGlobe: React.FC<Props> = ({ sites, selectedSiteId, onSi
       requestAnimationFrame(animate);
       // update sun direction based on current telemetry if provided
       // simple: rotate light slowly or align with telemetry
-      if (telemetryPoints && telemetryPoints.length > 0) {
-        const idx = Math.min(Math.max(0, timelineIdx), telemetryPoints.length - 1);
-        const p = telemetryPoints[idx];
-        if (p) {
-          // use sun az/el to orient light approx along local
-          const sunDir = new THREE.Vector3(0.5, 0.5, 0.5).normalize();
-          light.position.copy(sunDir.multiplyScalar(5));
+        if (telemetryPoints && telemetryPoints.length > 0) {
+          const idx = Math.min(Math.max(0, timelineIdx), telemetryPoints.length - 1);
+          const p = telemetryPoints[idx];
+          if (p) {
+            // Determine site coords: prefer selectedSiteId from markerGroup, fallback to custom props
+            const site = sites.find((s) => s.id === selectedSiteId) ?? (typeof customLat === 'number' && typeof customLon === 'number' ? { lat: customLat, lon: customLon } as SiteData : undefined);
+            if (site) {
+              try {
+                const sd = computeBodyFixedDirection(site.lat, site.lon, p.sun_az, p.sun_el);
+                sun.position.copy(new THREE.Vector3(sd.x, sd.y, sd.z).multiplyScalar(12));
+                rimUniforms.sunDir.value.copy(new THREE.Vector3(sd.x, sd.y, sd.z)).normalize();
+                const ed = computeBodyFixedDirection(site.lat, site.lon, p.earth_az, p.earth_el);
+                earthDir = new THREE.Vector3(ed.x, ed.y, ed.z).normalize();
+              } catch (err) {
+                // fallback: gentle rotation
+                const sunDir = new THREE.Vector3(0.5, 0.5, 0.5).normalize();
+                sun.position.copy(sunDir.multiplyScalar(10));
+                rimUniforms.sunDir.value.copy(sun.position).normalize();
+              }
+            }
+          }
         }
-      }
-       // smooth camera lerp toward preset target
-       azimuth += (cameraTarget.az - azimuth) * 0.06;
-       polar += (cameraTarget.pol - polar) * 0.06;
-       distance.value += (cameraTarget.dist - distance.value) * 0.06;
+        // smooth camera lerp toward preset target only when transitioning
+        if (isCameraTransitioning) {
+          azimuth += (cameraTarget.az - azimuth) * 0.06;
+          polar += (cameraTarget.pol - polar) * 0.06;
+          distance.value += (cameraTarget.dist - distance.value) * 0.06;
+          // compute target cam pos from spherical target
+          const tr = cameraTarget.dist;
+          const tx = tr * Math.cos(cameraTarget.pol) * Math.sin(cameraTarget.az);
+          const ty = tr * Math.sin(cameraTarget.pol);
+          const tz = tr * Math.cos(cameraTarget.pol) * Math.cos(cameraTarget.az);
+          const targetCamPos = new THREE.Vector3(tx, ty, tz);
+          if (camera.position.distanceTo(targetCamPos) < 0.02) {
+            isCameraTransitioning = false;
+          }
+        }
        // simple auto-rotation when not interacting (blend with preset)
        if (!isDragging) {
          azimuth += 0.0006;
@@ -426,8 +454,8 @@ export const LunarOrbitalGlobe: React.FC<Props> = ({ sites, selectedSiteId, onSi
          }
        });
 
-       // update rim shader sun direction
-       rimUniforms.sunDir.value.copy(light.position).normalize();
+        // update rim shader sun direction
+        rimUniforms.sunDir.value.copy(sun.position).normalize();
        // update directional rays for the active site
        try {
          raysGroup.clear();
@@ -435,18 +463,18 @@ export const LunarOrbitalGlobe: React.FC<Props> = ({ sites, selectedSiteId, onSi
          if (sel) {
            const world = new THREE.Vector3();
            sel.getWorldPosition(world);
-           const sunDir = light.position.clone().normalize();
-           const sunPts = [world.clone(), world.clone().add(sunDir.multiplyScalar(1.9))];
-           const sunGeom = new THREE.BufferGeometry().setFromPoints(sunPts);
-           const sunMat = new THREE.LineBasicMaterial({ color: 0xF59E0B, linewidth: 2, transparent: true, opacity: 0.95 });
-           const sunLine = new THREE.Line(sunGeom, sunMat);
-           raysGroup.add(sunLine);
+            const sunDir = sun.position.clone().normalize();
+            const sunPts = [world.clone(), world.clone().add(sunDir.clone().multiplyScalar(1.9))];
+            const sunGeom = new THREE.BufferGeometry().setFromPoints(sunPts);
+            const sunMat = new THREE.LineBasicMaterial({ color: 0xF59E0B, linewidth: 2, transparent: true, opacity: 0.95 });
+            const sunLine = new THREE.Line(sunGeom, sunMat);
+            raysGroup.add(sunLine);
 
-           const earthPts = [world.clone(), world.clone().add(earthDir.clone().multiplyScalar(1.9))];
-           const earthGeom = new THREE.BufferGeometry().setFromPoints(earthPts);
-           const earthMat = new THREE.LineBasicMaterial({ color: 0x06B6D4, linewidth: 2, transparent: true, opacity: 0.95 });
-           const earthLine = new THREE.Line(earthGeom, earthMat);
-           raysGroup.add(earthLine);
+            const earthPts = [world.clone(), world.clone().add(earthDir.clone().multiplyScalar(1.9))];
+            const earthGeom = new THREE.BufferGeometry().setFromPoints(earthPts);
+            const earthMat = new THREE.LineBasicMaterial({ color: 0x06B6D4, linewidth: 2, transparent: true, opacity: 0.95 });
+            const earthLine = new THREE.Line(earthGeom, earthMat);
+            raysGroup.add(earthLine);
          }
        } catch (err) {
          // ignore
@@ -473,17 +501,21 @@ export const LunarOrbitalGlobe: React.FC<Props> = ({ sites, selectedSiteId, onSi
       renderer.dispose();
       try { mount.removeChild(renderer.domElement); } catch {}
       try { mount.removeChild(overlay); } catch {}
-      // dispose textures
-      try { if (albedo) albedo.dispose(); } catch {}
-      try { if (bump) bump.dispose(); } catch {}
+      // Do not dispose cached textures (they are kept for instant reuse). Dispose only materials we created here.
       try { sphereMat.dispose(); } catch {}
       try { rimMat.dispose(); } catch {}
     };
   }, [sites, selectedSiteId, onSiteSelect, customLat, customLon, timelineIdx, telemetryPoints]);
 
   // Fallback SVG rendering when WebGL is not available (jsdom / headless)
-  const canvas = document.createElement('canvas');
-  const hasWebGL = !!(canvas.getContext && (canvas.getContext('webgl') || canvas.getContext('experimental-webgl')));
+  // Safe WebGL detection for fallback rendering (avoid calling getContext in jsdom)
+  let hasWebGL = false;
+  try {
+    const _c = document.createElement('canvas');
+    hasWebGL = !!(_c.getContext && (_c.getContext('webgl') || _c.getContext('experimental-webgl')));
+  } catch (e) {
+    hasWebGL = false;
+  }
 
   if (!hasWebGL) {
     // SVG projection: simple equirectangular mapping inside circle
@@ -504,28 +536,48 @@ export const LunarOrbitalGlobe: React.FC<Props> = ({ sites, selectedSiteId, onSi
     };
 
     return (
-      <div ref={mountRef} style={{ width: '100%', height: 420 }}>
-        <svg width={width} height={height} viewBox={`0 0 ${width} ${height}`} role="img" aria-label="Lunar globe (fallback)">
-          <defs>
-            <radialGradient id="moonGrad"><stop offset="0%" stopColor="#666"/><stop offset="100%" stopColor="#111"/></radialGradient>
-          </defs>
-          <circle cx={centerX} cy={centerY} r={radius} fill="url(#moonGrad)" stroke="#1E293B" />
-          {sites.map((s) => {
-            const p = project(s.lat, s.lon);
-            const color = s.id === selectedSiteId ? '#10B981' : (s.id === 'apollo-11' ? '#06B6D4' : (s.max_slope_deg > 15 ? '#EF4444' : '#F59E0B'));
-            return (
-              <g key={s.id} onClick={() => onSiteSelect(s.id)} style={{ cursor: 'pointer' }}>
-                <circle cx={p.x} cy={p.y} r={6} fill={color} stroke="#000" />
-                <text x={p.x + 8} y={p.y + 4} fontSize={10} fill="#F8FAFC">{s.name.split(' ').slice(0,2).join(' ')}</text>
-              </g>
-            );
-          })}
-        </svg>
+      <div style={{ background: '#131B2E', border: '1px solid #1E293B', borderRadius: 12, overflow: 'hidden' }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px 12px', background: '#131B2E', borderBottom: '1px solid #1E293B' }}>
+          <div style={{ color: '#F8FAFC', fontWeight: 700 }}>3D LUNAR ORBITAL TWIN</div>
+          <div style={{ display: 'flex', gap: 8, zIndex: 10 }}>
+            <button onClick={() => setCameraPresetRef.current('south')} style={{ background: '#090D16', border: '1px solid #1E293B', color: '#E2E8F0', padding: '6px 8px', borderRadius: 8 }}>South Pole Focus</button>
+            <button onClick={() => setCameraPresetRef.current('global')} style={{ background: '#090D16', border: '1px solid #1E293B', color: '#E2E8F0', padding: '6px 8px', borderRadius: 8 }}>Global View</button>
+          </div>
+        </div>
+        <div ref={mountRef} style={{ width: '100%', height: 420, position: 'relative' }}>
+          <svg width={width} height={height} viewBox={`0 0 ${width} ${height}`} role="img" aria-label="Lunar globe (fallback)">
+            <defs>
+              <radialGradient id="moonGrad"><stop offset="0%" stopColor="#666"/><stop offset="100%" stopColor="#111"/></radialGradient>
+            </defs>
+            <circle cx={centerX} cy={centerY} r={radius} fill="url(#moonGrad)" stroke="#1E293B" />
+            {sites.map((s) => {
+              const p = project(s.lat, s.lon);
+              const color = s.id === selectedSiteId ? '#10B981' : (s.id === 'apollo-11' ? '#06B6D4' : (s.max_slope_deg > 15 ? '#EF4444' : '#F59E0B'));
+              return (
+                <g key={s.id} onClick={() => onSiteSelect(s.id)} style={{ cursor: 'pointer' }}>
+                  <circle cx={p.x} cy={p.y} r={6} fill={color} stroke="#000" />
+                  <text x={p.x + 8} y={p.y + 4} fontSize={10} fill="#F8FAFC">{s.name.split(' ').slice(0,2).join(' ')}</text>
+                </g>
+              );
+            })}
+          </svg>
+        </div>
       </div>
     );
   }
 
-  return <div ref={mountRef} style={{ width: '100%', height: 420 }} />;
+  return (
+    <div style={{ background: '#131B2E', border: '1px solid #1E293B', borderRadius: 12, overflow: 'hidden' }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px 12px', background: '#131B2E', borderBottom: '1px solid #1E293B' }}>
+        <div style={{ color: '#F8FAFC', fontWeight: 700 }}>3D LUNAR ORBITAL TWIN</div>
+        <div style={{ display: 'flex', gap: 8, zIndex: 10 }}>
+          <button onClick={() => setCameraPresetRef.current('south')} style={{ background: '#090D16', border: '1px solid #1E293B', color: '#E2E8F0', padding: '6px 8px', borderRadius: 8 }}>South Pole Focus</button>
+          <button onClick={() => setCameraPresetRef.current('global')} style={{ background: '#090D16', border: '1px solid #1E293B', color: '#E2E8F0', padding: '6px 8px', borderRadius: 8 }}>Global View</button>
+        </div>
+      </div>
+      <div ref={mountRef} style={{ width: '100%', height: 380, position: 'relative' }} />
+    </div>
+  );
 };
 
 export default LunarOrbitalGlobe;

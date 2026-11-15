@@ -104,4 +104,110 @@
       0.3, 0.3
     ]
   }
+  ,
+  {
+    "id": "connecting-ridge",
+    "name": "Connecting Ridge",
+    "category": "Artemis III Candidate",
+    "lat": -89.45,
+    "lon": 222.5,
+    "alt_km": 1.5,
+    "max_slope_deg": 12.1,
+    "psr_distance_km": 1.2,
+    "description": "A narrow ridge near the lunar south pole with exceptional horizon clearance and steady grazing sunlight — a candidate for crewed traversal and short-range prospecting.",
+    "horizon_profile_deg": [
+      0.2,0.2,0.1,0.1,0.0,0.0,-0.1,-0.1,-0.1,0.0,
+      0.0,0.1,0.2,0.3,0.5,0.8,0.9,0.8,0.6,0.4,
+      0.3,0.2,0.1,0.0,-0.1,-0.2,-0.2,-0.1,0.0,0.1,
+      0.2,0.3,0.4,0.6,0.8,0.9,0.8,0.6,0.4,0.2,
+      0.1,0.0,-0.1,-0.1,0.0,0.1,0.2,0.3,0.4,0.5,
+      0.6,0.7,0.8,0.9,1.0,1.0,0.9,0.7,0.5,0.3,
+      0.2,0.1,0.0,-0.1,-0.1,0.0,0.0,0.1,0.2,0.2,
+      0.3,0.3
+    ]
+  },
+  {
+    "id": "peak-near-shackleton",
+    "name": "Peak Near Shackleton",
+    "category": "Artemis III Candidate",
+    "lat": -88.80,
+    "lon": 123.4,
+    "alt_km": 1.8,
+    "max_slope_deg": 13.4,
+    "psr_distance_km": 2.4,
+    "description": "A high peak adjacent to Shackleton offering long-duration low-angle sunlight and accessible slopes for surface operations.",
+    "horizon_profile_deg": [
+      0.3,0.3,0.2,0.1,0.0,0.0,-0.1,-0.1,-0.1,0.0,
+      0.1,0.2,0.4,0.6,0.9,1.2,1.1,0.9,0.7,0.5,
+      0.4,0.3,0.2,0.1,0.0,-0.1,-0.2,-0.1,0.0,0.1,
+      0.3,0.5,0.7,0.9,1.1,1.3,1.2,1.0,0.8,0.5,
+      0.3,0.2,0.1,0.0,0.0,0.1,0.3,0.5,0.6,0.7,
+      0.8,0.9,1.0,1.1,1.2,1.1,1.0,0.8,0.6,0.4,
+      0.3,0.2,0.1,0.0,0.0,0.0,0.1,0.2,0.3,0.3,
+      0.3,0.3
+    ]
+  },
+  {
+    "id": "de-gerlache-rim-2",
+    "name": "de Gerlache Rim 2",
+    "category": "Artemis III Candidate",
+    "lat": -88.30,
+    "lon": -68.2,
+    "alt_km": 1.1,
+    "max_slope_deg": 14.2,
+    "psr_distance_km": 2.9,
+    "description": "Rim exposures of de Gerlache providing strong horizon views toward the Sun and short routes to permanently shadowed hollows.",
+    "horizon_profile_deg": [
+      0.5,0.5,0.4,0.3,0.2,0.1,0.0,-0.1,-0.2,-0.2,
+      -0.1,0.0,0.1,0.3,0.6,0.9,1.1,1.0,0.8,0.6,
+      0.5,0.4,0.3,0.2,0.1,0.0,-0.1,-0.1,0.0,0.1,
+      0.2,0.4,0.6,0.8,1.0,1.1,1.0,0.8,0.6,0.4,
+      0.3,0.2,0.1,0.0,-0.1,-0.1,0.0,0.2,0.4,0.5,
+      0.6,0.7,0.9,1.0,1.1,1.1,1.0,0.8,0.6,0.4,
+      0.3,0.2,0.1,0.0,0.0,0.1,0.2,0.3,0.4,0.4,
+      0.4,0.4
+    ]
+  },
+  {
+    "id": "haworth",
+    "name": "Haworth",
+    "category": "Artemis III Candidate",
+    "lat": -87.50,
+    "lon": -5.0,
+    "alt_km": 0.4,
+    "max_slope_deg": 13.8,
+    "psr_distance_km": 0.9,
+    "description": "Haworth crater rim near the pole with sheltered PSRs nearby and gentle rim segments suitable for rover access.",
+    "horizon_profile_deg": [
+      0.8,0.7,0.6,0.5,0.4,0.3,0.2,0.1,0.0,-0.1,
+      -0.1,0.0,0.1,0.2,0.4,0.6,0.7,0.6,0.5,0.4,
+      0.3,0.2,0.1,0.0,-0.1,-0.1,0.0,0.1,0.2,0.3,
+      0.4,0.5,0.6,0.7,0.8,0.9,0.8,0.6,0.5,0.4,
+      0.3,0.2,0.1,0.0,0.0,0.1,0.2,0.3,0.4,0.5,
+      0.6,0.7,0.8,0.9,1.0,1.0,0.9,0.7,0.5,0.3,
+      0.2,0.1,0.0,-0.1,-0.1,0.0,0.0,0.1,0.2,0.2,
+      0.2,0.2
+    ]
+  },
+  {
+    "id": "faustini-rim-a",
+    "name": "Faustini Rim A",
+    "category": "Artemis III Candidate",
+    "lat": -87.15,
+    "lon": 77.5,
+    "alt_km": 0.7,
+    "max_slope_deg": 17.4,
+    "psr_distance_km": 1.4,
+    "description": "A steep rim segment of Faustini crater with close PSR access — slope exceeds CSA rover safe threshold and should be vetoed for rover operations.",
+    "horizon_profile_deg": [
+      1.0,0.9,0.8,0.7,0.6,0.5,0.4,0.3,0.2,0.1,
+      0.0,-0.1,-0.2,-0.2,-0.1,0.0,0.1,0.2,0.4,0.6,
+      0.8,1.0,1.2,1.4,1.5,1.5,1.4,1.2,1.0,0.8,
+      0.6,0.5,0.4,0.3,0.2,0.2,0.3,0.4,0.6,0.8,
+      1.0,1.1,1.0,0.9,0.8,0.7,0.6,0.5,0.4,0.3,
+      0.2,0.2,0.3,0.4,0.6,0.8,1.0,1.1,1.0,0.9,
+      0.8,0.7,0.6,0.5,0.4,0.3,0.2,0.2,0.3,0.4,
+      0.5,0.6
+    ]
+  }
 ]

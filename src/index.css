@@ -14,3 +14,25 @@
     font-family: 'JetBrains Mono', monospace;
   }
 }
+
+/* Custom dark scrollbars */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: #1E293B #090D16;
+}
+
+/* Webkit */
+*::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+*::-webkit-scrollbar-track {
+  background: #090D16;
+}
+*::-webkit-scrollbar-thumb {
+  background: #1E293B;
+  border-radius: 6px;
+}
+*::-webkit-scrollbar-thumb:hover {
+  background: #38BDF8;
+}

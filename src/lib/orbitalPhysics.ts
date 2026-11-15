@@ -193,10 +193,30 @@ export function getSiteTelemetry(siteId: string, offset: LaunchOffset): SiteTele
   if (!site) throw new Error(`Site ${siteId} not found`);
 
   const ephemeris = ephemerisData as Record<string, Record<string, { start_date: string; source: string; points: EphemerisPoint[] }>>;
-  const siteEphemeris = ephemeris[siteId]?.[offset];
+  let siteEphemeris = ephemeris[siteId]?.[offset];
+  // Fallback: for South Pole sites (lat < -60) without a dedicated ephemeris, use the Shackleton reference ephemeris
+  if (!siteEphemeris && site.lat < -60) {
+    const proxy = ephemeris['shackleton-rim']?.[offset];
+    if (proxy) {
+      siteEphemeris = {
+        start_date: proxy.start_date,
+        source: proxy.source + ' (proxy: shackleton-rim)',
+        points: proxy.points,
+      };
+    }
+  }
   if (!siteEphemeris) throw new Error(`Ephemeris not found for ${siteId} ${offset}`);
 
   const points = processPoints(siteEphemeris.points, site.horizon_profile_deg);
+  // Compute battery trajectory for real sites as well; ensure T+000h SoC starts at 85.0
+  const batteryTrajectory = computeBatteryTrajectory(points, 85);
+  // Ensure T+000h SoC is the declared start percentage (85.0) and subsequent points follow the trajectory
+  if (points.length > 0) {
+    (points[0] as TelemetryPoint).battery_soc_pct = 85;
+    for (let i = 1; i < points.length; i++) {
+      (points[i] as TelemetryPoint).battery_soc_pct = batteryTrajectory[i - 1];
+    }
+  }
   const solar_uptime_pct = computeUptimePct(points, 'sun_visible');
   const dte_uptime_pct = computeUptimePct(points, 'earth_visible');
   const max_continuous_eclipse_hours = computeMaxContinuousEclipseHours(points);
@@ -292,8 +312,11 @@ export function getCustomCoordTelemetry(
 
   // Compute battery trajectory and attach to points
   const batteryTrajectory = computeBatteryTrajectory(points, 85);
-  for (let i = 0; i < points.length; i++) {
-    (points[i] as TelemetryPoint).battery_soc_pct = batteryTrajectory[i];
+  if (points.length > 0) {
+    (points[0] as TelemetryPoint).battery_soc_pct = 85;
+    for (let i = 1; i < points.length; i++) {
+      (points[i] as TelemetryPoint).battery_soc_pct = batteryTrajectory[i - 1];
+    }
   }
 
   // Discriminated countdown states for custom site (based on initial point)
