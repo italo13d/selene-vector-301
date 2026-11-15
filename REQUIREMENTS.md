@@ -72,6 +72,23 @@ REQ-UX-02 — T-Minus Countdown & Badging
 REQ-UX-03 — Responsive Sidebar & Search
   - The Landing Site list shall include a compact search input and a scrollable area (max-height 290px) so that all 10 curated sites are easily discoverable on typical desktop sidebars.
 
+JUDGE ACCEPTANCE STORIES (US)
+
+US-01 — Landing Site Program Context
+  - AC-01: Every sidebar Landing Site row must display a compact mission-program badge labeled Apollo, Artemis III, or CLPS, derived from mission metadata.
+  - AC-02: Program badges must remain visible alongside CSA safety cues so judges can quickly distinguish historic, crewed Artemis III, and commercial CLPS targets.
+
+US-02 — Horizon and Timeline Readability
+  - AC-01: The Polar Horizon Sky-Dome shall render concentric elevation reference rings labeled 0°, 30°, and 60°.
+  - AC-02: Cardinal markers N/E/S/W shall use high-contrast styling to remain legible over all trajectory overlays.
+  - AC-03: When custom coordinates are active, the chart shall display the dashed-horizon label "Idealized Spherical Horizon (No LOLA)".
+  - AC-04: The 14-day timeline strip shall indicate the active point with a high-contrast white needle or white border highlight at currentStepIndex.
+
+US-03 — Survival Alerts and Plain-Language Guidance
+  - AC-01: T-Minus Sunset and T-Minus Earthset cards shall turn amber when remaining time is under 12 hours and red when currently eclipsed or in DTE loss-of-signal state.
+  - AC-02: Max Eclipse shall include an accessible tooltip clarifying equatorial ~14-Earth-day lunar nights versus terrain-driven south-pole shadows.
+  - AC-03: Explorer mode shall show one-line helper subtitles in telemetry cards for Solar Efficiency, DTE Link, Battery SoC, and PSR Distance.
+
 Traceability & Tests
   - All automated tests must reference the corresponding REQ-* identifiers in their descriptions.
   - Developers must not read src/data/ephemeris.json directly with ad-hoc filesystem reads in tests; ephemeris data shall be accessed through the application's orbitalPhysics module.

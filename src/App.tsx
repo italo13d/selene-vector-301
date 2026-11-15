@@ -1,14 +1,14 @@
 import React, { useState, useMemo, useCallback, useEffect, useRef } from 'react';
 import {
   Satellite, Radio, Zap, Clock, Sun, Globe, ChevronRight,
-  MapPin, Gauge, Activity, Eye, EyeOff
+  MapPin, Gauge, Activity, Eye, EyeOff, Info, X
 } from 'lucide-react';
 import { PolarHorizonChart } from './components/PolarHorizonChart';
 import LunarOrbitalGlobe from './components/LunarOrbitalGlobe';
 import { SiteRankingTable } from './components/SiteRankingTable';
 import {
   getSiteTelemetry, getCustomCoordTelemetry, getAllSites,
-  type LaunchOffset, type SiteData, type SiteTelemetry
+  type LaunchOffset, type SiteData, type SiteTelemetry, type TelemetryPoint
 } from './lib/orbitalPhysics';
 import { runAHPTOPSIS, DEFAULT_WEIGHTS, type AHPWeights, type SiteRankingEntry } from './lib/ahpTopsis';
 import { exportTimelineCSV } from './lib/exportDossier';
@@ -21,6 +21,108 @@ const LAUNCH_OFFSETS: { label: string; value: LaunchOffset }[] = [
   { label: 'Delay +14d', value: '+14d' },
   { label: 'Delay +30d', value: '+30d' },
 ];
+
+type MissionProgramTag = 'Apollo' | 'Artemis III' | 'CLPS';
+type CountdownAlertState = 'nominal' | 'warning' | 'critical';
+
+const MISSION_PROGRAM_STYLES: Record<MissionProgramTag, { background: string; border: string; color: string }> = {
+  Apollo: { background: '#06B6D41F', border: '#06B6D455', color: '#67E8F9' },
+  'Artemis III': { background: '#F59E0B1F', border: '#F59E0B55', color: '#FCD34D' },
+  CLPS: { background: '#3B82F61F', border: '#3B82F655', color: '#93C5FD' },
+};
+
+const COUNTDOWN_INTERVAL_HOURS = 2;
+const MAX_PINNED_COMPARE_SITES = 2;
+const COMPARISON_WINDOW_POINTS = 169;
+
+type DeltaDirection = 'benefit' | 'cost';
+
+function sanitizeComparedSiteIds(siteIds: string[], activeSiteId: string, sites: SiteData[]): string[] {
+  return siteIds
+    .filter((siteId, index, arr) => (
+      arr.indexOf(siteId) === index
+      && siteId !== activeSiteId
+      && sites.some((site) => site.id === siteId)
+    ))
+    .slice(0, MAX_PINNED_COMPARE_SITES);
+}
+
+function formatDelta(
+  value: number | undefined,
+  baseline: number | undefined,
+  direction: DeltaDirection,
+  decimals: number,
+  suffix = ''
+): { label: string; color: string } {
+  if (value === undefined || baseline === undefined) {
+    return { label: 'Δ --', color: '#F8FAFC40' };
+  }
+
+  const threshold = Math.pow(10, -decimals) / 2;
+  const rawDelta = value - baseline;
+  const normalizedDelta = Math.abs(rawDelta) < threshold ? 0 : rawDelta;
+  const sign = normalizedDelta > 0 ? '+' : '';
+  const label = `Δ ${sign}${normalizedDelta.toFixed(decimals)}${suffix}`;
+
+  if (normalizedDelta === 0) {
+    return { label, color: '#F8FAFC40' };
+  }
+
+  const positiveOutcome = direction === 'benefit'
+    ? normalizedDelta > 0
+    : normalizedDelta < 0;
+
+  return {
+    label,
+    color: positiveOutcome ? '#22C55E' : '#EF4444',
+  };
+}
+
+function deriveMissionProgramTag(site: SiteData & { mission_program?: string | null }): MissionProgramTag {
+  const missionProgram = (site.mission_program ?? '').toLowerCase();
+  const category = site.category.toLowerCase();
+  const name = site.name.toLowerCase();
+
+  if (missionProgram.includes('apollo') || name.includes('apollo')) return 'Apollo';
+  if (missionProgram.includes('artemis') || category.includes('artemis')) return 'Artemis III';
+  if (missionProgram.includes('clps') || category.includes('clps') || category.includes('rover')) return 'CLPS';
+
+  return 'CLPS';
+}
+
+function getHorizonElevationAtAzimuth(az: number, horizonProfile: number[]): number {
+  const idx = Math.round((((az % 360) + 360) % 360) / 5) % 72;
+  return horizonProfile[idx] ?? 0;
+}
+
+function getCountdownTransitionHours(
+  points: TelemetryPoint[],
+  startIndex: number,
+  key: 'sun_visible' | 'earth_visible',
+  fromVisible: boolean,
+  toVisible: boolean,
+  horizonProfile: number[],
+  body: 'sun' | 'earth'
+): number | null {
+  for (let i = startIndex; i < points.length - 1; i++) {
+    if (points[i][key] === fromVisible && points[i + 1][key] === toVisible) {
+      const fromPoint = points[i];
+      const toPoint = points[i + 1];
+      const fromEl = body === 'sun' ? fromPoint.sun_el : fromPoint.earth_el;
+      const toEl = body === 'sun' ? toPoint.sun_el : toPoint.earth_el;
+      const fromAz = body === 'sun' ? fromPoint.sun_az : fromPoint.earth_az;
+      const toAz = body === 'sun' ? toPoint.sun_az : toPoint.earth_az;
+      const fromDelta = fromEl - getHorizonElevationAtAzimuth(fromAz, horizonProfile);
+      const toDelta = toEl - getHorizonElevationAtAzimuth(toAz, horizonProfile);
+      const denominator = fromDelta - toDelta;
+      const crossingFraction = Math.abs(denominator) > 1e-6
+        ? Math.min(1, Math.max(0, fromDelta / denominator))
+        : 1;
+      return (i - startIndex + crossingFraction) * COUNTDOWN_INTERVAL_HOURS;
+    }
+  }
+  return null;
+}
 
 // Lunar horizon emblem SVG
 const LunarEmblem: React.FC = () => (
@@ -49,16 +151,45 @@ const TMinusCard: React.FC<{
   hours: number;
   color: string;
   icon: React.ReactNode;
-}> = ({ label, hours, color, icon }) => {
+  alertState?: CountdownAlertState;
+}> = ({ label, hours, color, icon, alertState = 'nominal' }) => {
   const h = Math.floor(Math.abs(hours));
   const m = Math.floor((Math.abs(hours) - h) * 60);
+
+  const palette = alertState === 'critical'
+    ? {
+      background: '#EF444420',
+      border: '#EF4444AA',
+      label: '#FCA5A5',
+      value: '#FECACA',
+      shadow: '0 0 18px #EF444455',
+    }
+    : alertState === 'warning'
+      ? {
+        background: '#F59E0B20',
+        border: '#F59E0BAA',
+        label: '#FCD34D',
+        value: '#FEF3C7',
+        shadow: '0 0 16px #F59E0B55',
+      }
+      : {
+        background: '#090D16',
+        border: `${color}30`,
+        label: `${color}80`,
+        value: color,
+        shadow: 'none',
+      };
+
   return (
-    <div className="flex flex-col gap-1 p-4 rounded-lg" style={{ background: '#090D16', border: `1px solid ${color}30` }}>
-      <div className="flex items-center gap-2 text-xs font-mono" style={{ color: `${color}80` }}>
+    <div
+      className="flex flex-col gap-1 p-4 rounded-lg"
+      style={{ background: palette.background, border: `1px solid ${palette.border}`, boxShadow: palette.shadow }}
+    >
+      <div className="flex items-center gap-2 text-xs font-mono" style={{ color: palette.label }}>
         {icon}
         {label}
       </div>
-      <div className="font-mono font-bold text-2xl" style={{ color, letterSpacing: '0.08em' }}>
+      <div className="font-mono font-bold text-2xl" style={{ color: palette.value, letterSpacing: '0.08em' }}>
         T-{h.toString().padStart(3, '0')}:{m.toString().padStart(2, '0')}
       </div>
       <div className="text-xs font-mono" style={{ color: '#F8FAFC40' }}>hrs:min</div>
@@ -89,7 +220,12 @@ const TimelineBar: React.FC<{ points: Array<{ sun_visible: boolean; earth_visibl
   onScrub,
   currentIdx,
 }) => {
-  const displayPoints = points.slice(0, 168); // ~14 days at 2hr intervals
+  const displayPoints = points.slice(0, 169); // 14 days at 2-hour intervals (T+0h..T+336h)
+  const activeIdx = Math.max(0, Math.min(currentIdx, Math.max(displayPoints.length - 1, 0)));
+  const needleLeftPct = displayPoints.length > 0
+    ? ((activeIdx + 0.5) / displayPoints.length) * 100
+    : 0;
+
   return (
     <div>
       <div className="flex items-start justify-between mb-2 gap-3">
@@ -104,36 +240,52 @@ const TimelineBar: React.FC<{ points: Array<{ sun_visible: boolean; earth_visibl
         </div>
         <span className="text-xs font-mono" style={{ color: '#F8FAFC40' }}>{points.length} points @ 2hr</span>
       </div>
-      <div
-        className="flex gap-px cursor-pointer rounded overflow-hidden"
-        style={{ height: 24 }}
-        role="slider"
-        aria-label="Timeline scrubber"
-        aria-valuenow={currentIdx}
-        aria-valuemin={0}
-        aria-valuemax={displayPoints.length - 1}
-      >
-         {displayPoints.map((p, i) => {
-           // Determine base color for the slot
-           let color = '#1E293B'; // eclipse
-           if (p.sun_visible && p.earth_visible) color = '#22c55e'; // both = green
-           else if (p.sun_visible) color = '#F59E0B'; // solar only = amber
-           else if (p.earth_visible) color = '#06B6D4'; // DTE only = cyan
-           else color = '#1E293B'; // eclipse uses the same slate as the legend
+      <div className="relative">
+        <div
+          className="flex gap-px cursor-pointer rounded overflow-hidden"
+          style={{ height: 24 }}
+          role="slider"
+          aria-label="Timeline scrubber"
+          aria-valuenow={activeIdx}
+          aria-valuemin={0}
+          aria-valuemax={displayPoints.length - 1}
+        >
+          {displayPoints.map((p, i) => {
+            let color = '#1E293B'; // eclipse
+            if (p.sun_visible && p.earth_visible) color = '#22c55e';
+            else if (p.sun_visible) color = '#F59E0B';
+            else if (p.earth_visible) color = '#06B6D4';
 
-           return (
-             <div
-               key={i}
-               onClick={() => onScrub(i)}
-               className={`flex-1 ${i === currentIdx ? 'ring-2 ring-white z-10' : ''}`}
-               style={{
-                 background: color,
-                 minWidth: 2,
-               }}
-               title={`T+${(i * 2).toString().padStart(3, '0')}h — Solar: ${p.sun_visible ? 'ON' : 'OFF'}, DTE: ${p.earth_visible ? 'ON' : 'OFF'}`}
-             />
-           );
-         })}
+            return (
+              <div
+                key={i}
+                onClick={() => onScrub(i)}
+                className="flex-1"
+                style={{
+                  background: color,
+                  minWidth: 2,
+                  border: i === activeIdx ? '1px solid #FFFFFF' : '1px solid transparent',
+                  boxSizing: 'border-box',
+                  zIndex: i === activeIdx ? 20 : 1,
+                }}
+                title={`T+${(i * 2).toString().padStart(3, '0')}h — Solar: ${p.sun_visible ? 'ON' : 'OFF'}, DTE: ${p.earth_visible ? 'ON' : 'OFF'}`}
+              />
+            );
+          })}
+        </div>
+        {displayPoints.length > 0 && (
+          <div
+            aria-hidden="true"
+            className="absolute top-0 bottom-0 pointer-events-none"
+            style={{
+              left: `calc(${needleLeftPct}% - 1px)`,
+              width: 2,
+              background: '#FFFFFF',
+              boxShadow: '0 0 0 1px #090D16, 0 0 12px #FFFFFF99',
+              zIndex: 30,
+            }}
+          />
+        )}
       </div>
       <div className="flex justify-between mt-1 text-xs font-mono" style={{ color: '#F8FAFC30' }}>
         <span>T+0h</span>
@@ -152,6 +304,47 @@ const TimelineBar: React.FC<{ points: Array<{ sun_visible: boolean; earth_visibl
             <span style={{ color: '#F8FAFC60' }}>{label}</span>
           </span>
         ))}
+      </div>
+    </div>
+  );
+};
+
+const ComparisonWindowStrip: React.FC<{ points: TelemetryPoint[] }> = ({ points }) => {
+  const displayPoints = points.slice(0, COMPARISON_WINDOW_POINTS);
+
+  return (
+    <div>
+      <div className="text-[10px] font-mono mb-1" style={{ color: '#F8FAFC60' }}>336H WINDOW STRIP</div>
+      <div
+        className="flex gap-px rounded overflow-hidden"
+        style={{ height: 10 }}
+        aria-label="336 hour solar and DTE strip"
+      >
+        {displayPoints.map((point, idx) => {
+          let color = '#FB7185';
+          let label = 'Blackout';
+
+          if (point.sun_visible && point.earth_visible) {
+            color = '#10B981';
+            label = 'Solar + DTE';
+          } else if (point.earth_visible) {
+            color = '#06B6D4';
+            label = 'DTE Only';
+          }
+
+          return (
+            <span
+              key={`${point.t}-${idx}`}
+              className="flex-1"
+              style={{ background: color, minWidth: 1 }}
+              title={`T+${(idx * 2).toString().padStart(3, '0')}h - ${label}`}
+            />
+          );
+        })}
+      </div>
+      <div className="flex justify-between mt-1 text-[10px] font-mono" style={{ color: '#F8FAFC40' }}>
+        <span>T+000h</span>
+        <span>T+336h</span>
       </div>
     </div>
   );
@@ -299,6 +492,60 @@ const ExplorerMode: React.FC<{
   );
 };
 
+const ExplorerTelemetryCards: React.FC<{
+  currentPoint?: TelemetryPoint;
+  site: SiteData;
+}> = ({ currentPoint, site }) => {
+  const cards = [
+    {
+      label: 'Solar Efficiency',
+      value: currentPoint ? `${currentPoint.solar_eff_pct.toFixed(1)}%` : '--',
+      subtitle: 'Low Sun angles can keep charging weak even while sunlight is visible.',
+      color: '#F59E0B',
+      icon: <Sun size={14} />,
+    },
+    {
+      label: 'DTE Link',
+      value: currentPoint ? (currentPoint.earth_visible ? 'LINK ACTIVE' : 'BLOCKED') : '--',
+      subtitle: 'Crater rims can hide Earth near the horizon and interrupt direct comms.',
+      color: currentPoint?.earth_visible ? '#06B6D4' : '#EF4444',
+      icon: <Radio size={14} />,
+    },
+    {
+      label: 'Battery SoC',
+      value: currentPoint?.battery_soc_pct !== undefined ? `${currentPoint.battery_soc_pct.toFixed(1)}%` : '--',
+      subtitle: 'Long shadow periods force battery-only survival operations.',
+      color: currentPoint?.battery_soc_pct !== undefined && currentPoint.battery_soc_pct < 20 ? '#EF4444' : '#22c55e',
+      icon: <Gauge size={14} />,
+    },
+    {
+      label: 'PSR Distance',
+      value: `${site.psr_distance_km.toFixed(1)} km`,
+      subtitle: 'Closer ice targets are useful, but shadowed terrain raises ops risk.',
+      color: '#3B82F6',
+      icon: <Activity size={14} />,
+    },
+  ];
+
+  return (
+    <div className="p-4 rounded-xl" style={{ background: '#131B2E', border: '1px solid #1E293B' }}>
+      <div className="text-xs font-mono mb-3" style={{ color: '#F8FAFC60' }}>EXPLORER TELEMETRY QUICKLOOK</div>
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+        {cards.map(({ label, value, subtitle, color, icon }) => (
+          <div key={label} className="p-3 rounded-lg" style={{ background: '#090D16', border: '1px solid #1E293B' }}>
+            <div className="flex items-center gap-1.5 text-xs font-mono mb-1" style={{ color: '#F8FAFC80' }}>
+              <span style={{ color }}>{icon}</span>
+              {label}
+            </div>
+            <div className="font-mono font-bold text-base" style={{ color }}>{value}</div>
+            <div className="text-xs mt-1" style={{ color: '#F8FAFC80' }}>{subtitle}</div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+};
+
 // Custom coordinates panel
 interface CustomCoordsState {
   lat: string;
@@ -352,6 +599,46 @@ export default function App() {
     [sites, selectedSiteId]
   );
 
+  const countdownStatus = useMemo(() => {
+    if (!telemetry || telemetry.points.length === 0) return null;
+
+    const points = telemetry.points;
+    const horizonProfile = telemetry.site.horizon_profile_deg;
+    const startIndex = Math.max(0, Math.min(timelineIdx, points.length - 1));
+    const point = points[startIndex];
+    const remainingWindowHours = Math.max(0, (points.length - 1 - startIndex) * COUNTDOWN_INTERVAL_HOURS);
+
+    const tMinusSunset = getCountdownTransitionHours(points, startIndex, 'sun_visible', true, false, horizonProfile, 'sun') ?? remainingWindowHours;
+    const tMinusSunrise = getCountdownTransitionHours(points, startIndex, 'sun_visible', false, true, horizonProfile, 'sun') ?? remainingWindowHours;
+    const tMinusEarthset = getCountdownTransitionHours(points, startIndex, 'earth_visible', true, false, horizonProfile, 'earth') ?? remainingWindowHours;
+    const tMinusEarthrise = getCountdownTransitionHours(points, startIndex, 'earth_visible', false, true, horizonProfile, 'earth') ?? remainingWindowHours;
+
+    const sunState: CountdownAlertState = point.sun_visible
+      ? (tMinusSunset < 12 ? 'warning' : 'nominal')
+      : 'critical';
+    const earthState: CountdownAlertState = point.earth_visible
+      ? (tMinusEarthset < 12 ? 'warning' : 'nominal')
+      : 'critical';
+
+    return {
+      sun: {
+        label: point.sun_visible ? 'T-MINUS SUNSET' : 'T-MINUS SUNRISE',
+        hours: point.sun_visible ? tMinusSunset : tMinusSunrise,
+        state: sunState,
+      },
+      earth: {
+        label: point.earth_visible ? 'T-MINUS EARTHSET' : 'T-MINUS EARTHRISE',
+        hours: point.earth_visible ? tMinusEarthset : tMinusEarthrise,
+        state: earthState,
+      },
+    };
+  }, [telemetry, timelineIdx]);
+
+  const batteryCriticalInWindow = useMemo(() => {
+    if (!telemetry) return false;
+    return telemetry.points.some((p) => (p.battery_soc_pct ?? 100) < 20);
+  }, [telemetry]);
+
   const handleSiteSelect = useCallback((id: string) => {
     setSelectedSiteId(id);
     setTimelineIdx(0);
@@ -370,22 +657,108 @@ export default function App() {
 
   const displaySite = customCoords.active && telemetry ? telemetry.site : selectedSite;
   const isCustomCoordActive = customCoords.active || selectedSiteId === 'custom' || displaySite.id === 'custom';
-  const [compareActive, setCompareActive] = useState(false);
-  const [compareTargetId, setCompareTargetId] = useState<string>(() => {
-    // default to apollo-11 if present, otherwise first other site
-    const ap = getAllSites().find((s) => s.id === 'apollo-11');
-    if (ap) return ap.id;
-    const other = getAllSites().find((s) => s.id !== selectedSiteId);
-    return other?.id ?? selectedSiteId;
-  });
+  const [isCompareOpen, setIsCompareOpen] = useState(false);
+  const [comparedSiteIds, setComparedSiteIds] = useState<string[]>([]);
 
-  const compareTelemetry = useMemo(() => {
-    try {
-      return getSiteTelemetry(compareTargetId, offset);
-    } catch {
-      return null;
-    }
-  }, [compareTargetId, offset]);
+  const selectedRankingEntry = useMemo(
+    () => rankings.find((entry) => entry.site.id === displaySite.id),
+    [rankings, displaySite.id]
+  );
+
+  const rankingBySiteId = useMemo(
+    () => new Map(rankings.map((entry) => [entry.site.id, entry])),
+    [rankings]
+  );
+
+  const defaultComparedSiteId = useMemo(() => {
+    const apollo = sites.find((site) => site.id === 'apollo-11' && site.id !== displaySite.id);
+    if (apollo) return apollo.id;
+    return sites.find((site) => site.id !== displaySite.id)?.id;
+  }, [sites, displaySite.id]);
+
+  useEffect(() => {
+    setComparedSiteIds((current) => {
+      const sanitized = sanitizeComparedSiteIds(current, displaySite.id, sites);
+      return sanitized.length === current.length && sanitized.every((id, idx) => id === current[idx])
+        ? current
+        : sanitized;
+    });
+  }, [displaySite.id, sites]);
+
+  const availableCompareSites = useMemo(
+    () => sites.filter((site) => site.id !== displaySite.id && !comparedSiteIds.includes(site.id)),
+    [sites, displaySite.id, comparedSiteIds]
+  );
+
+  const comparedSiteDetails = useMemo(
+    () => comparedSiteIds
+      .map((siteId) => sites.find((site) => site.id === siteId))
+      .filter((site): site is SiteData => Boolean(site)),
+    [comparedSiteIds, sites]
+  );
+
+  const handleCompareToggle = useCallback((nextOpen: boolean) => {
+    setIsCompareOpen(nextOpen);
+    if (!nextOpen) return;
+
+    setComparedSiteIds((current) => {
+      const sanitized = sanitizeComparedSiteIds(current, displaySite.id, sites);
+      if (sanitized.length > 0) return sanitized;
+      return defaultComparedSiteId ? [defaultComparedSiteId] : [];
+    });
+  }, [defaultComparedSiteId, displaySite.id, sites]);
+
+  const handleAddComparedSite = useCallback((siteId: string) => {
+    if (!siteId) return;
+
+    setComparedSiteIds((current) => {
+      const sanitized = sanitizeComparedSiteIds(current, displaySite.id, sites);
+
+      if (
+        sanitized.length >= MAX_PINNED_COMPARE_SITES
+        || sanitized.includes(siteId)
+        || siteId === displaySite.id
+        || !sites.some((site) => site.id === siteId)
+      ) {
+        return sanitized;
+      }
+
+      return [...sanitized, siteId];
+    });
+  }, [displaySite.id, sites]);
+
+  const handleRemoveComparedSite = useCallback((siteId: string) => {
+    setComparedSiteIds((current) => current.filter((id) => id !== siteId));
+  }, []);
+
+  const comparisonSiteColumns = useMemo(() => {
+    if (!telemetry) return [];
+
+    const columns = [{
+      id: displaySite.id,
+      telemetry,
+      rankingEntry: selectedRankingEntry,
+      isActive: true,
+    }];
+
+    comparedSiteIds.forEach((siteId) => {
+      try {
+        const comparedTelemetry = getSiteTelemetry(siteId, offset);
+        columns.push({
+          id: siteId,
+          telemetry: comparedTelemetry,
+          rankingEntry: rankingBySiteId.get(siteId),
+          isActive: false,
+        });
+      } catch {
+        // Ignore unavailable telemetry entries.
+      }
+    });
+
+    return columns;
+  }, [telemetry, displaySite.id, selectedRankingEntry, comparedSiteIds, offset, rankingBySiteId]);
+
+  const activeComparisonColumn = comparisonSiteColumns[0];
   // Playback state
   const [playing, setPlaying] = useState(false);
   const [playSpeed, setPlaySpeed] = useState<number>(1); // 1x,5x,20x
@@ -398,9 +771,10 @@ export default function App() {
     // base tick ms per index at 1x
     const baseMs = 500; // 500ms per 2-hour slot at 1x
     const ms = Math.max(10, Math.round(baseMs / playSpeed));
+    const timelineLength = Math.max(1, telemetry?.points.length ?? 169);
     const id = setInterval(() => {
       setTimelineIdx((i) => {
-        const next = (i + 1) % 168;
+        const next = (i + 1) % timelineLength;
         return next;
       });
     }, ms) as unknown as number;
@@ -411,7 +785,7 @@ export default function App() {
         playIntervalRef.current = null;
       }
     };
-  }, [playing, playSpeed]);
+  }, [playing, playSpeed, telemetry?.points.length]);
 
   // Watch for transitions to show status banner
   useEffect(() => {
@@ -518,6 +892,8 @@ export default function App() {
               {sites.filter((s) => s.name.toLowerCase().includes(siteQuery.toLowerCase()) || s.id.toLowerCase().includes(siteQuery.toLowerCase())).map((site) => {
                 const isSelected = site.id === selectedSiteId && !customCoords.active;
                 const isVetoed = site.max_slope_deg > 15;
+                const missionProgram = deriveMissionProgramTag(site);
+                const missionProgramStyle = MISSION_PROGRAM_STYLES[missionProgram];
                 return (
                   <button
                     key={site.id}
@@ -538,6 +914,18 @@ export default function App() {
                       </div>
                     </div>
                     <div className="flex flex-col items-end gap-1">
+                      <span
+                        className="px-1.5 py-0.5 rounded text-xs font-mono font-semibold"
+                        style={{
+                          background: missionProgramStyle.background,
+                          border: `1px solid ${missionProgramStyle.border}`,
+                          color: missionProgramStyle.color,
+                          fontSize: 9,
+                          letterSpacing: '0.02em',
+                        }}
+                      >
+                        {missionProgram}
+                      </span>
                       {isVetoed && (
                         <span className="text-xs font-mono px-1 rounded" style={{ background: '#EF44441A', color: '#EF4444', fontSize: 9 }}>
                           VETO
@@ -664,6 +1052,11 @@ export default function App() {
                       ⛔ CSA VETO — SLOPE {displaySite.max_slope_deg}°
                     </span>
                   )}
+                  {batteryCriticalInWindow && (
+                    <span className="px-2 py-1 rounded text-xs font-mono font-bold" style={{ background: '#EF44441A', color: '#FCA5A5', border: '1px solid #EF444440' }}>
+                      ⚠ BATTERY CRITICAL — SoC &lt; 20%
+                    </span>
+                  )}
                   <span className="px-2 py-1 rounded text-xs font-mono" style={{ background: '#1E293B', color: '#F8FAFC80' }}>
                     Offset: {offset}
                   </span>
@@ -675,58 +1068,235 @@ export default function App() {
                 {displaySite.description}
               </div>
               {/* Compare Sites */}
-              <div className="p-3 mt-2 rounded-lg" style={{ background: '#090D16', border: '1px solid #1E293B' }}>
-                <div className="flex items-center justify-between mb-2">
-                  <div className="text-sm font-heading" style={{ color: '#F8FAFC' }}>Compare Sites</div>
+              <div className="p-4 mt-2 rounded-lg space-y-3" style={{ background: '#090D16', border: '1px solid #1E293B' }}>
+                <div className="flex flex-wrap items-center justify-between gap-3">
                   <div>
-                    <label className="text-xs font-mono" style={{ color: '#F8FAFC60', marginRight: 8 }}>
-                      <input type="checkbox" checked={compareActive} onChange={(e) => setCompareActive(e.target.checked)} />
-                    </label>
+                    <div className="text-sm font-heading" style={{ color: '#F8FAFC' }}>Compare Sites</div>
+                    <div className="text-xs font-mono" style={{ color: '#F8FAFC60' }}>
+                      Pin up to 2 sites and compare trade-offs against the active site.
+                    </div>
                   </div>
+                  <label className="text-xs font-mono flex items-center gap-2" style={{ color: '#F8FAFC80' }}>
+                    <input
+                      type="checkbox"
+                      checked={isCompareOpen}
+                      onChange={(e) => handleCompareToggle(e.target.checked)}
+                    />
+                    Enable
+                  </label>
                 </div>
-                {compareActive && (
-                  <div>
-                    <div style={{ position: 'relative' }}>
-                      <div style={{ position: 'relative' }}>
-                        <button
-                          aria-label="Compare target select"
-                          onClick={() => setCompareActive((c) => !c)}
-                          className="px-2 py-1 text-xs"
-                          style={{ background: '#090D16', border: '1px solid #1E293B', color: '#E2E8F0' }}
-                        >
-                          {sites.find((s) => s.id === compareTargetId)?.name ?? 'Select site'}
-                        </button>
-                        {compareActive && (
-                          <div role="listbox" style={{ position: 'absolute', zIndex: 50, marginTop: 6, background: '#090D16', border: '1px solid #1E293B', padding: 8, minWidth: 180, borderRadius: 8 }}>
-                            {sites.filter((s) => s.id !== displaySite.id).map((s) => (
-                              <button key={s.id} onClick={() => { setCompareTargetId(s.id); setCompareActive(false); }} style={{ display: 'block', width: '100%', textAlign: 'left', padding: '8px 10px', background: 'transparent', color: '#E2E8F0', border: 'none', borderRadius: 6 }}>
-                                {s.name}
-                              </button>
-                            ))}
-                          </div>
+
+                {isCompareOpen && (
+                  <div className="space-y-3">
+                    <div className="flex flex-col md:flex-row md:items-center gap-2">
+                      <select
+                        aria-label="Add site to compare"
+                        value=""
+                        onChange={(e) => handleAddComparedSite(e.target.value)}
+                        disabled={comparedSiteIds.length >= MAX_PINNED_COMPARE_SITES || availableCompareSites.length === 0}
+                        className="px-2 py-1.5 rounded text-xs font-mono"
+                        style={{ background: '#131B2E', border: '1px solid #1E293B', color: '#F8FAFC', minWidth: 240 }}
+                      >
+                        <option value="">
+                          {comparedSiteIds.length >= MAX_PINNED_COMPARE_SITES
+                            ? '+ Add site to compare (max 2 pinned)'
+                            : '+ Add site to compare'}
+                        </option>
+                        {availableCompareSites.map((site) => (
+                          <option key={site.id} value={site.id}>{site.name}</option>
+                        ))}
+                      </select>
+
+                      <div className="flex flex-wrap gap-2">
+                        {comparedSiteDetails.map((site) => (
+                          <span
+                            key={site.id}
+                            className="inline-flex items-center gap-1 px-2 py-1 rounded-full text-xs font-mono"
+                            style={{ background: '#1E293B', color: '#F8FAFCCC', border: '1px solid #3B82F640' }}
+                          >
+                            {site.name}
+                            <button
+                              type="button"
+                              onClick={() => handleRemoveComparedSite(site.id)}
+                              aria-label={`Remove ${site.name} from comparison`}
+                              className="inline-flex items-center justify-center"
+                              style={{ color: '#F8FAFC80' }}
+                            >
+                              <X size={12} />
+                            </button>
+                          </span>
+                        ))}
+                        {comparedSiteDetails.length === 0 && (
+                          <span className="text-xs font-mono" style={{ color: '#F8FAFC60' }}>
+                            No comparison sites pinned yet.
+                          </span>
                         )}
                       </div>
                     </div>
-                    {compareTelemetry && (
-                      <div className="grid grid-cols-2 gap-3 text-xs font-mono">
-                        <div style={{ border: '1px solid #1E293B', padding: 8 }}>
-                          <div style={{ color: '#F8FAFC80' }}>Current Site</div>
-                          <div style={{ color: '#F8FAFC' }}>{displaySite.name}</div>
-                          <div style={{ color: '#F8FAFC80' }}>Solar Uptime: <strong style={{ color: '#F59E0B' }}>{telemetry?.solar_uptime_pct.toFixed(1)}%</strong></div>
-                          <div style={{ color: '#F8FAFC80' }}>DTE Uptime: <strong style={{ color: '#06B6D4' }}>{telemetry?.dte_uptime_pct.toFixed(1)}%</strong></div>
-                          <div style={{ color: '#F8FAFC80' }}>Max Eclipse: <strong style={{ color: displaySite.max_slope_deg > 15 ? '#EF4444' : '#F8FAFC' }}>{telemetry?.max_continuous_eclipse_hours.toFixed(1)}h</strong></div>
-                          <div style={{ color: '#F8FAFC80' }}>Slope: <strong style={{ color: displaySite.max_slope_deg > 15 ? '#EF4444' : '#F8FAFC' }}>{displaySite.max_slope_deg.toFixed(1)}°</strong></div>
-                          <div style={{ color: '#F8FAFC80' }}>CSA Veto: <strong style={{ color: displaySite.max_slope_deg > 15 ? '#EF4444' : '#06B6D4' }}>{displaySite.max_slope_deg > 15 ? 'YES' : 'NO'}</strong></div>
+
+                    {comparisonSiteColumns.length > 0 ? (
+                      <div className="space-y-3">
+                        <div
+                          className="grid gap-3"
+                          style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(230px, 1fr))' }}
+                        >
+                          {comparisonSiteColumns.map((column) => {
+                            const slopeVeto = column.telemetry.site.max_slope_deg > 15;
+                            const activeTelemetry = activeComparisonColumn?.telemetry;
+                            const activeScore = activeComparisonColumn?.rankingEntry?.topsis_score;
+
+                            const solarDelta = formatDelta(
+                              column.telemetry.solar_uptime_pct,
+                              activeTelemetry?.solar_uptime_pct,
+                              'benefit',
+                              1,
+                              '%'
+                            );
+                            const dteDelta = formatDelta(
+                              column.telemetry.dte_uptime_pct,
+                              activeTelemetry?.dte_uptime_pct,
+                              'benefit',
+                              1,
+                              '%'
+                            );
+                            const eclipseDelta = formatDelta(
+                              column.telemetry.max_continuous_eclipse_hours,
+                              activeTelemetry?.max_continuous_eclipse_hours,
+                              'cost',
+                              1,
+                              'h'
+                            );
+                            const topsisDelta = formatDelta(
+                              column.rankingEntry?.topsis_score,
+                              activeScore,
+                              'benefit',
+                              3
+                            );
+
+                            return (
+                              <div
+                                key={column.id}
+                                className="rounded-lg p-3 space-y-2"
+                                style={{
+                                  background: '#131B2E',
+                                  border: column.isActive ? '1px solid #3B82F680' : '1px solid #1E293B',
+                                }}
+                              >
+                                <div className="flex items-start justify-between gap-2">
+                                  <div>
+                                    <div className="text-[10px] font-mono uppercase tracking-wide" style={{ color: '#F8FAFC60' }}>
+                                      {column.isActive ? 'Active Site' : 'Pinned Site'}
+                                    </div>
+                                    <div className="text-sm font-heading leading-snug" style={{ color: '#F8FAFC' }}>
+                                      {column.telemetry.site.name}
+                                    </div>
+                                  </div>
+                                  <span
+                                    className="px-2 py-0.5 rounded text-[10px] font-mono font-semibold"
+                                    style={{
+                                      background: column.isActive ? '#3B82F626' : '#1E293B',
+                                      color: column.isActive ? '#93C5FD' : '#F8FAFC99',
+                                      border: `1px solid ${column.isActive ? '#3B82F680' : '#334155'}`,
+                                    }}
+                                  >
+                                    {column.isActive ? 'ACTIVE' : 'PINNED'}
+                                  </span>
+                                </div>
+
+                                <div className="space-y-1.5 text-xs font-mono" style={{ color: '#F8FAFC80' }}>
+                                  <div className="flex items-start justify-between gap-2">
+                                    <span>Solar Uptime (%)</span>
+                                    <div className="text-right">
+                                      <div style={{ color: '#F59E0B' }}>{column.telemetry.solar_uptime_pct.toFixed(1)}%</div>
+                                      <div className="text-[10px]" style={{ color: column.isActive ? '#F8FAFC40' : solarDelta.color }}>
+                                        {column.isActive ? 'Δ baseline' : solarDelta.label}
+                                      </div>
+                                    </div>
+                                  </div>
+
+                                  <div className="flex items-start justify-between gap-2">
+                                    <span>DTE Comms Uptime (%)</span>
+                                    <div className="text-right">
+                                      <div style={{ color: '#06B6D4' }}>{column.telemetry.dte_uptime_pct.toFixed(1)}%</div>
+                                      <div className="text-[10px]" style={{ color: column.isActive ? '#F8FAFC40' : dteDelta.color }}>
+                                        {column.isActive ? 'Δ baseline' : dteDelta.label}
+                                      </div>
+                                    </div>
+                                  </div>
+
+                                  <div className="flex items-start justify-between gap-2">
+                                    <span>Max Continuous Eclipse (h)</span>
+                                    <div className="text-right">
+                                      <div style={{ color: column.telemetry.max_continuous_eclipse_hours > 24 ? '#EF4444' : '#F8FAFC' }}>
+                                        {column.telemetry.max_continuous_eclipse_hours.toFixed(1)}h
+                                      </div>
+                                      <div className="text-[10px]" style={{ color: column.isActive ? '#F8FAFC40' : eclipseDelta.color }}>
+                                        {column.isActive ? 'Δ baseline' : eclipseDelta.label}
+                                      </div>
+                                    </div>
+                                  </div>
+
+                                  <div className="flex items-start justify-between gap-2">
+                                    <span>PSR Distance (km)</span>
+                                    <strong style={{ color: '#3B82F6' }}>{column.telemetry.site.psr_distance_km.toFixed(1)} km</strong>
+                                  </div>
+
+                                  <div className="flex items-start justify-between gap-2">
+                                    <span>Terrain Slope (°)</span>
+                                    <strong style={{ color: slopeVeto ? '#EF4444' : '#F8FAFC' }}>
+                                      {column.telemetry.site.max_slope_deg.toFixed(1)}°
+                                    </strong>
+                                  </div>
+
+                                  <div className="flex items-start justify-between gap-2">
+                                    <span>CSA Safety</span>
+                                    <span
+                                      className="px-1.5 py-0.5 rounded text-[10px] font-semibold"
+                                      style={{
+                                        background: slopeVeto ? '#EF444420' : '#22C55E1F',
+                                        border: `1px solid ${slopeVeto ? '#EF444455' : '#22C55E55'}`,
+                                        color: slopeVeto ? '#FCA5A5' : '#86EFAC',
+                                      }}
+                                    >
+                                      {slopeVeto ? 'VETO > 15°' : 'SAFE'}
+                                    </span>
+                                  </div>
+
+                                  <div className="flex items-start justify-between gap-2">
+                                    <span>AHP-TOPSIS Score (C*)</span>
+                                    <div className="text-right">
+                                      <div style={{ color: '#F8FAFC' }}>
+                                        {column.rankingEntry ? column.rankingEntry.topsis_score.toFixed(3) : '--'}
+                                      </div>
+                                      <div className="text-[10px]" style={{ color: column.isActive ? '#F8FAFC40' : topsisDelta.color }}>
+                                        {column.isActive ? 'Δ baseline' : topsisDelta.label}
+                                      </div>
+                                    </div>
+                                  </div>
+                                </div>
+
+                                <ComparisonWindowStrip points={column.telemetry.points} />
+                              </div>
+                            );
+                          })}
                         </div>
-                        <div style={{ border: '1px solid #1E293B', padding: 8 }}>
-                          <div style={{ color: '#F8FAFC80' }}>Compare Site</div>
-                          <div style={{ color: '#F8FAFC' }}>{compareTelemetry.site.name}</div>
-                          <div style={{ color: '#F8FAFC80' }}>Solar Uptime: <strong style={{ color: '#F59E0B' }}>{compareTelemetry.solar_uptime_pct.toFixed(1)}%</strong></div>
-                          <div style={{ color: '#F8FAFC80' }}>DTE Uptime: <strong style={{ color: '#06B6D4' }}>{compareTelemetry.dte_uptime_pct.toFixed(1)}%</strong></div>
-                          <div style={{ color: '#F8FAFC80' }}>Max Eclipse: <strong style={{ color: compareTelemetry.max_continuous_eclipse_hours > 24 ? '#EF4444' : '#F8FAFC' }}>{compareTelemetry.max_continuous_eclipse_hours.toFixed(1)}h</strong></div>
-                          <div style={{ color: '#F8FAFC80' }}>Slope: <strong style={{ color: compareTelemetry.site.max_slope_deg > 15 ? '#EF4444' : '#F8FAFC' }}>{compareTelemetry.site.max_slope_deg.toFixed(1)}°</strong></div>
-                          <div style={{ color: '#F8FAFC80' }}>CSA Veto: <strong style={{ color: compareTelemetry.site.max_slope_deg > 15 ? '#EF4444' : '#06B6D4' }}>{compareTelemetry.site.max_slope_deg > 15 ? 'YES' : 'NO'}</strong></div>
+
+                        <div className="flex gap-3 text-[10px] font-mono flex-wrap" style={{ color: '#F8FAFC80' }}>
+                          {[
+                            { label: 'Solar + DTE', color: '#10B981' },
+                            { label: 'DTE Only', color: '#06B6D4' },
+                            { label: 'Blackout', color: '#FB7185' },
+                          ].map((entry) => (
+                            <span key={entry.label} className="inline-flex items-center gap-1">
+                              <span style={{ width: 9, height: 9, background: entry.color, borderRadius: 2, display: 'inline-block' }} />
+                              {entry.label}
+                            </span>
+                          ))}
                         </div>
+                      </div>
+                    ) : (
+                      <div className="text-xs font-mono" style={{ color: '#F8FAFC60' }}>
+                        Active site telemetry is unavailable for comparison.
                       </div>
                     )}
                   </div>
@@ -743,6 +1313,7 @@ export default function App() {
                           site={displaySite as SiteData}
                           points={telemetry.points}
                           currentPointIndex={timelineIdx}
+                          isCustomCoord={isCustomCoordActive}
                         />
                       )}
                     </div>
@@ -764,17 +1335,19 @@ export default function App() {
                 <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-6">
                   <div>
                     <TMinusCard
-                      label={telemetry && telemetry.sun_countdown.state === 'SUNLIT' ? 'T-MINUS SUNSET' : 'T-MINUS SUNRISE'}
-                      hours={telemetry ? (telemetry.sun_countdown.state === 'SUNLIT' ? telemetry.sun_countdown.t_minus_sunset_hours : (telemetry.sun_countdown.t_minus_sunrise_hours ?? 0)) : 0}
+                      label={countdownStatus?.sun.label ?? 'T-MINUS SUNSET'}
+                      hours={countdownStatus?.sun.hours ?? 0}
                       color="#F59E0B"
+                      alertState={countdownStatus?.sun.state ?? 'nominal'}
                       icon={<Sun size={12} />}
                     />
                   </div>
                   <div>
                     <TMinusCard
-                      label={telemetry && telemetry.dte_countdown.state === 'DTE_ACTIVE' ? 'T-MINUS EARTHSET' : 'T-MINUS EARTHRISE'}
-                      hours={telemetry ? (telemetry.dte_countdown.state === 'DTE_ACTIVE' ? telemetry.dte_countdown.t_minus_earthset_hours : (telemetry.dte_countdown.t_minus_earthrise_hours ?? 0)) : 0}
+                      label={countdownStatus?.earth.label ?? 'T-MINUS EARTHSET'}
+                      hours={countdownStatus?.earth.hours ?? 0}
                       color="#06B6D4"
+                      alertState={countdownStatus?.earth.state ?? 'nominal'}
                       icon={<Globe size={12} />}
                     />
                   </div>
@@ -856,13 +1429,40 @@ export default function App() {
                         {[
                           { label: 'Solar Uptime', value: `${telemetry?.solar_uptime_pct.toFixed(1) ?? '--'}%`, color: '#F59E0B', icon: <Zap size={12} /> },
                           { label: 'DTE Uptime', value: `${telemetry?.dte_uptime_pct.toFixed(1) ?? '--'}%`, color: '#06B6D4', icon: <Satellite size={12} /> },
-                          { label: 'Max Eclipse', value: `${telemetry?.max_continuous_eclipse_hours.toFixed(0) ?? '--'}h`, color: telemetry && telemetry.max_continuous_eclipse_hours > 24 ? '#EF4444' : '#F8FAFC', icon: <Clock size={12} /> },
+                          {
+                            label: 'Max Eclipse',
+                            value: `${telemetry?.max_continuous_eclipse_hours.toFixed(0) ?? '--'}h`,
+                            color: telemetry && telemetry.max_continuous_eclipse_hours > 24 ? '#EF4444' : '#F8FAFC',
+                            icon: <Clock size={12} />,
+                            hint: 'Equatorial sites can face ~14 Earth-day lunar nights, while south-pole crater rims create terrain-driven shadow cycles.',
+                          },
                           { label: 'PSR Distance', value: `${displaySite.psr_distance_km.toFixed(1)} km`, color: '#3B82F6', icon: <Activity size={12} /> },
-                        ].map(({ label, value, color, icon }) => (
+                        ].map(({ label, value, color, icon, hint }) => (
                           <div key={label} className="flex items-center gap-2">
                             <span style={{ color }}>{icon}</span>
                             <div>
-                              <div className="text-xs font-mono" style={{ color: '#F8FAFC40' }}>{label}</div>
+                              <div className="text-xs font-mono flex items-center gap-1" style={{ color: '#F8FAFC40' }}>
+                                <span>{label}</span>
+                                {hint && (
+                                  <button
+                                    type="button"
+                                    title={hint}
+                                    aria-label={`${label} info: ${hint}`}
+                                    style={{
+                                      background: 'transparent',
+                                      border: 'none',
+                                      color: '#F8FAFC80',
+                                      display: 'inline-flex',
+                                      alignItems: 'center',
+                                      justifyContent: 'center',
+                                      padding: 0,
+                                      cursor: 'help',
+                                    }}
+                                  >
+                                    <Info size={11} />
+                                  </button>
+                                )}
+                              </div>
                               <div className="font-mono font-bold text-sm" style={{ color }}>{value}</div>
                             </div>
                           </div>
@@ -917,7 +1517,11 @@ export default function App() {
                       Scrub: T+{(timelineIdx * 2).toString().padStart(3, '0')}h — {telemetry.points[timelineIdx]?.t ?? '--'}
                     </span>
                     <button
-                      onClick={() => exportTimelineCSV(telemetry)}
+                      onClick={() => exportTimelineCSV(telemetry, selectedRankingEntry ? {
+                        topsis_score: selectedRankingEntry.topsis_score,
+                        slope_veto: selectedRankingEntry.slope_veto,
+                        battery_risk: selectedRankingEntry.battery_risk,
+                      } : undefined)}
                       className="flex items-center gap-1.5 text-xs font-mono px-2 py-1 rounded hover:opacity-80 transition-opacity"
                       style={{ background: '#1E293B', color: '#F59E0B', border: '1px solid #F59E0B30' }}
                       aria-label="Export timeline as CSV"
@@ -954,7 +1558,7 @@ export default function App() {
                 {LAUNCH_OFFSETS.map(({ label, value }) => (
                   <button
                     key={value}
-                    onClick={() => setOffset(value)}
+                    onClick={() => { setOffset(value); setTimelineIdx(0); }}
                     className="px-3 py-1.5 rounded text-xs font-mono"
                     style={{
                       background: offset === value ? '#3B82F6' : '#1E293B',
@@ -972,6 +1576,10 @@ export default function App() {
                 telemetry={telemetry}
                 site={displaySite}
                 isCustomCoordActive={isCustomCoordActive}
+              />
+              <ExplorerTelemetryCards
+                currentPoint={currentPoint}
+                site={displaySite}
               />
             </div>
           )}

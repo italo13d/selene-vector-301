@@ -4,6 +4,12 @@
 import { type SiteRankingEntry } from './ahpTopsis';
 import { type SiteTelemetry } from './orbitalPhysics';
 
+interface TimelineExportContext {
+  topsis_score?: number;
+  slope_veto?: boolean;
+  battery_risk?: boolean;
+}
+
 function downloadFile(content: string, filename: string, mimeType: string): void {
   const blob = new Blob([content], { type: mimeType });
   const url = URL.createObjectURL(blob);
@@ -17,7 +23,9 @@ function downloadFile(content: string, filename: string, mimeType: string): void
 }
 
 export function exportRankingCSV(entries: SiteRankingEntry[], offset: string): void {
+  const generatedAt = new Date().toISOString();
   const headers = [
+    'Generated At (UTC)',
     'Rank',
     'Site ID',
     'Site Name',
@@ -37,6 +45,7 @@ export function exportRankingCSV(entries: SiteRankingEntry[], offset: string): v
   ];
 
   const rows = entries.map((e) => [
+    generatedAt,
     e.rank,
     e.site.id,
     `"${e.site.name}"`,
@@ -103,7 +112,12 @@ export function exportRankingJSON(entries: SiteRankingEntry[], offset: string): 
   downloadFile(json, `selene-vector-301-dossier-${offset}-${timestamp}.json`, 'application/json');
 }
 
-export function exportTimelineCSV(telemetry: SiteTelemetry): void {
+export function exportTimelineCSV(telemetry: SiteTelemetry, context?: TimelineExportContext): void {
+  const generatedAt = new Date().toISOString();
+  const slopeVeto = context?.slope_veto ?? telemetry.site.max_slope_deg > 15;
+  const batteryRisk = context?.battery_risk ?? telemetry.max_continuous_eclipse_hours > 24;
+  const topsisScore = context?.topsis_score;
+
   const headers = [
     'Time (UTC)',
     'Sun Azimuth (°)',
@@ -126,7 +140,31 @@ export function exportTimelineCSV(telemetry: SiteTelemetry): void {
     p.solar_eff_pct.toFixed(2),
   ]);
 
-  const csv = [headers.join(','), ...rows.map((r) => r.join(','))].join('\n');
+  const metadataRows = [
+    ['Generated At (UTC)', generatedAt],
+    ['Launch Offset', telemetry.offset],
+    ['Site ID', telemetry.site.id],
+    ['Site Name', telemetry.site.name],
+    ['Site Category', telemetry.site.category],
+    ['Latitude (deg)', telemetry.site.lat.toFixed(4)],
+    ['Longitude (deg)', telemetry.site.lon.toFixed(4)],
+    ['Altitude (km)', telemetry.site.alt_km.toFixed(2)],
+    ['Max Slope (deg)', telemetry.site.max_slope_deg.toFixed(2)],
+    ['PSR Distance (km)', telemetry.site.psr_distance_km.toFixed(2)],
+    ['Solar Uptime (%)', telemetry.solar_uptime_pct.toFixed(2)],
+    ['DTE Uptime (%)', telemetry.dte_uptime_pct.toFixed(2)],
+    ['Max Continuous Eclipse (hr)', telemetry.max_continuous_eclipse_hours.toFixed(1)],
+    ['AHP-TOPSIS C*', topsisScore !== undefined ? topsisScore.toFixed(4) : 'N/A'],
+    ['CSA Slope Veto', slopeVeto ? 'YES' : 'NO'],
+    ['CSA Battery Risk', batteryRisk ? 'YES' : 'NO'],
+  ];
+
+  const csv = [
+    ...metadataRows.map((r) => r.join(',')),
+    '',
+    headers.join(','),
+    ...rows.map((r) => r.join(',')),
+  ].join('\n');
   const siteId = telemetry.site.id.replace(/[^a-z0-9-]/g, '');
   const timestamp = new Date().toISOString().slice(0, 10);
   downloadFile(csv, `selene-vector-301-timeline-${siteId}-${telemetry.offset}-${timestamp}.csv`, 'text/csv');

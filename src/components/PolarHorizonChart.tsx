@@ -6,6 +6,7 @@ interface PolarHorizonChartProps {
   site: SiteData;
   points: TelemetryPoint[];
   currentPointIndex?: number;
+  isCustomCoord?: boolean;
 }
 
 const SVG_SIZE = 480;
@@ -43,11 +44,17 @@ function buildHorizonPolygon(profile: number[]): string {
 
 const COMPASS = ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW'];
 const COMPASS_AZ = [0, 45, 90, 135, 180, 225, 270, 315];
+const ELEVATION_REFERENCE_RINGS = [
+  { label: '0°', radius: 1.0, dash: undefined, strokeWidth: 1.2 },
+  { label: '30°', radius: 2 / 3, dash: '4 4', strokeWidth: 1.0 },
+  { label: '60°', radius: 1 / 3, dash: '3 4', strokeWidth: 1.0 },
+];
 
 export const PolarHorizonChart: React.FC<PolarHorizonChartProps> = ({
   site,
   points,
   currentPointIndex = 0,
+  isCustomCoord = false,
 }) => {
   const [hoveredPoint, setHoveredPoint] = useState<{ x: number; y: number; label: string } | null>(null);
 
@@ -79,28 +86,29 @@ export const PolarHorizonChart: React.FC<PolarHorizonChartProps> = ({
       <div className="text-xs font-mono mb-2" style={{ color: '#F8FAFC80' }}>
         360° TERRAIN-AWARE HORIZON MAP — {site.name.toUpperCase()}
       </div>
-      <svg
-        viewBox={`0 0 ${SVG_SIZE} ${SVG_SIZE}`}
-        style={{ width: '100%', maxWidth: SVG_SIZE, height: 'auto', display: 'block', margin: '0 auto' }}
-        onMouseMove={handleSvgMouseMove}
-        onMouseLeave={() => setHoveredPoint(null)}
-        role="img"
-        aria-label={`Polar horizon chart for ${site.name}`}
-      >
+      <div className="overflow-x-auto">
+        <svg
+          viewBox={`0 0 ${SVG_SIZE} ${SVG_SIZE}`}
+          style={{ width: SVG_SIZE, minWidth: SVG_SIZE, height: 'auto', display: 'block', margin: '0 auto' }}
+          onMouseMove={handleSvgMouseMove}
+          onMouseLeave={() => setHoveredPoint(null)}
+          role="img"
+          aria-label={`Polar horizon chart for ${site.name}`}
+        >
         {/* Background */}
-        <circle cx={CENTER} cy={CENTER} r={OUTER_R} fill="#090D16" stroke="#1E293B" strokeWidth={1} />
+        <circle cx={CENTER} cy={CENTER} r={OUTER_R} fill="#090D16" stroke="#334155" strokeWidth={1.2} />
 
-        {/* Elevation rings at 0°, 5°, 10° */}
-        {[0.25, 0.5, 0.75, 1.0].map((frac, i) => (
+        {/* Elevation reference rings (sky-dome) */}
+        {ELEVATION_REFERENCE_RINGS.map(({ label, radius, dash, strokeWidth }) => (
           <circle
-            key={i}
+            key={label}
             cx={CENTER}
             cy={CENTER}
-            r={OUTER_R * frac}
+            r={OUTER_R * radius}
             fill="none"
-            stroke="#1E293B"
-            strokeWidth={0.5}
-            strokeDasharray="4 4"
+            stroke={label === '0°' ? '#64748B' : '#475569'}
+            strokeWidth={strokeWidth}
+            strokeDasharray={dash}
           />
         ))}
 
@@ -108,12 +116,13 @@ export const PolarHorizonChart: React.FC<PolarHorizonChartProps> = ({
         {COMPASS_AZ.map((az) => {
           const [x1, y1] = toCartesian(az, 0.05);
           const [x2, y2] = toCartesian(az, 1.0);
+          const isPrimaryCardinal = az % 90 === 0;
           return (
             <line
               key={az}
               x1={x1} y1={y1} x2={x2} y2={y2}
-              stroke="#1E293B"
-              strokeWidth={0.5}
+              stroke={isPrimaryCardinal ? '#475569' : '#1E293B'}
+              strokeWidth={isPrimaryCardinal ? 1.1 : 0.5}
             />
           );
         })}
@@ -193,16 +202,20 @@ export const PolarHorizonChart: React.FC<PolarHorizonChartProps> = ({
         {COMPASS.map((label, i) => {
           const az = COMPASS_AZ[i];
           const [x, y] = toCartesian(az, 1.12);
+          const isPrimaryCardinal = label === 'N' || label === 'E' || label === 'S' || label === 'W';
           return (
             <text
               key={label}
               x={x} y={y}
               textAnchor="middle"
               dominantBaseline="central"
-              fontSize={11}
+              fontSize={isPrimaryCardinal ? 13 : 10}
               fontFamily="JetBrains Mono, monospace"
-              fontWeight={label === 'N' ? 700 : 400}
-              fill={label === 'N' ? '#F8FAFC' : '#F8FAFC80'}
+              fontWeight={isPrimaryCardinal ? 700 : 500}
+              fill={isPrimaryCardinal ? '#F8FAFC' : '#94A3B8'}
+              stroke={isPrimaryCardinal ? '#090D16' : 'none'}
+              strokeWidth={isPrimaryCardinal ? 2 : 0}
+              paintOrder="stroke"
             >
               {label}
             </text>
@@ -210,19 +223,14 @@ export const PolarHorizonChart: React.FC<PolarHorizonChartProps> = ({
         })}
 
         {/* Elevation ring labels */}
-        {[
-          { r: 0.25, label: '10°' },
-          { r: 0.5, label: '5°' },
-          { r: 0.75, label: '0°' },
-          { r: 1.0, label: '-5°' },
-        ].map(({ r, label }) => (
+        {ELEVATION_REFERENCE_RINGS.map(({ radius, label }) => (
           <text
             key={label}
-            x={CENTER + 4}
-            y={CENTER - OUTER_R * r + 4}
-            fontSize={8}
+            x={CENTER + 8}
+            y={CENTER - OUTER_R * radius - 4}
+            fontSize={9}
             fontFamily="JetBrains Mono, monospace"
-            fill="#F8FAFC40"
+            fill={label === '0°' ? '#CBD5E1' : '#94A3B8'}
           >
             {label}
           </text>
@@ -251,7 +259,8 @@ export const PolarHorizonChart: React.FC<PolarHorizonChartProps> = ({
             </text>
           </g>
         )}
-      </svg>
+        </svg>
+      </div>
 
       {/* Legend */}
       <div className="flex flex-wrap gap-4 mt-3 justify-center text-xs" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
@@ -268,6 +277,13 @@ export const PolarHorizonChart: React.FC<PolarHorizonChartProps> = ({
           <span style={{ color: '#F8FAFC80' }}>Earth Track</span>
         </span>
       </div>
+
+      {isCustomCoord && (
+        <div className="mt-2 flex items-center justify-center gap-2 text-xs" style={{ fontFamily: 'JetBrains Mono, monospace', color: '#E2E8F0' }}>
+          <span style={{ width: 32, borderTop: '2px dashed #94A3B8' }} />
+          <span>Idealized Spherical Horizon (No LOLA)</span>
+        </div>
+      )}
     </div>
   );
 };

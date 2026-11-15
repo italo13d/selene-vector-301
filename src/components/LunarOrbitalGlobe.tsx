@@ -280,7 +280,7 @@ export const LunarOrbitalGlobe: React.FC<Props> = ({ sites, selectedSiteId, onSi
     const markerGroup = new THREE.Group();
     scene.add(markerGroup);
 
-    // HUD overlay for 2D projected labels and camera preset buttons
+    // HUD overlay for 2D projected labels
     const overlay = document.createElement('div');
     overlay.style.position = 'absolute';
     overlay.style.left = '0';
@@ -293,36 +293,16 @@ export const LunarOrbitalGlobe: React.FC<Props> = ({ sites, selectedSiteId, onSi
 
     const hudContainer = document.createElement('div');
     hudContainer.style.position = 'absolute';
-    hudContainer.style.right = '12px';
-    hudContainer.style.top = '12px';
-    hudContainer.style.pointerEvents = 'auto';
+    hudContainer.style.left = '0';
+    hudContainer.style.top = '0';
+    hudContainer.style.width = '100%';
+    hudContainer.style.height = '100%';
+    hudContainer.style.pointerEvents = 'none';
     overlay.appendChild(hudContainer);
-
-    // camera preset buttons
-    const southBtn = document.createElement('button');
-    southBtn.innerText = 'South Pole Focus';
-    const globalBtn = document.createElement('button');
-    globalBtn.innerText = 'Global View';
-    [southBtn, globalBtn].forEach((b) => {
-      b.style.display = 'block';
-      b.style.marginBottom = '6px';
-      b.style.padding = '6px 8px';
-      b.style.background = '#090D16';
-      b.style.border = '1px solid #1E293B';
-      b.style.color = '#E2E8F0';
-      b.style.borderRadius = '6px';
-      b.style.fontSize = '12px';
-      b.style.cursor = 'pointer';
-    });
-    southBtn.onclick = () => setCameraPreset('south');
-    globalBtn.onclick = () => setCameraPreset('global');
-    hudContainer.appendChild(southBtn);
-    hudContainer.appendChild(globalBtn);
 
     function buildMarkers() {
       markerGroup.clear();
-      // remove any existing HUD children
-      while (hudContainer.children.length > 2) hudContainer.removeChild(hudContainer.children[2]);
+      while (hudContainer.firstChild) hudContainer.removeChild(hudContainer.firstChild);
       const allSites = sites.slice();
       if (customLat !== undefined && customLon !== undefined && !isNaN(customLat) && !isNaN(customLon)) {
         allSites.push({ id: 'custom', name: 'Custom', category: 'Custom', lat: customLat, lon: customLon, alt_km: 0, max_slope_deg: 0, psr_distance_km: 0, description: '', horizon_profile_deg: [] } as unknown as SiteData);

@@ -60,18 +60,17 @@ describe('Functional requirements (REQ-UI-01, REQ-EXP-01)', () => {
   it('Compare Sites panel renders comparison metrics', () => {
     render(<App />);
     // toggle compare panel using the compare checkbox that exists in the UI
-    const compareCheckbox = screen.getByRole('checkbox');
+    const compareCheckbox = screen.getByRole('checkbox', { name: /Enable/i });
     fireEvent.click(compareCheckbox);
-    // open custom dropdown (button)
-    const dropdown = screen.getByRole('button', { name: /Compare target select/ });
-    fireEvent.click(dropdown);
-    // click the Apollo 11 option
-    const option = screen.getAllByRole('button').find((b) => /Apollo 11 — Mare Tranquillitatis/.test(b.textContent || ''));
-    expect(option).toBeTruthy();
-    if (option) fireEvent.click(option);
-    // Apollo 11 name should appear somewhere in the document
-    const matches = screen.getAllByText(/Apollo 11/);
-    expect(matches.length).toBeGreaterThan(0);
+
+    expect(screen.getAllByText(/Apollo 11/).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/Solar Uptime \(\%\)/).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/AHP-TOPSIS Score \(C\*\)/).length).toBeGreaterThan(0);
+
+    const addSelector = screen.getByRole('combobox', { name: /Add site to compare/i });
+    fireEvent.change(addSelector, { target: { value: 'nobile-rim-1' } });
+
+    expect(screen.getAllByText(/Nobile/i).length).toBeGreaterThan(0);
   });
 
   it('Custom coordinates submission produces a custom site telemetry with 72-sector horizon', () => {
