@@ -1,51 +1,75 @@
-Selene Vector 301 — Lunar Landing Site Navigator
+# Selene Vector 301 - Lunar Landing Site Navigator
 
 Live demo: https://selene-vector-301.vercel.app/
 
-Overview
--
-Selene Vector 301 is a mission planning prototype built for the 2026 NASA Space Apps Challenge. It presents a realistic, ephemeris-driven 3D lunar orbiter twin with tools to evaluate curated landing sites using an AHP-TOPSIS multi-criteria engine and mission timeline playback.
+## Overview
 
-Key features
--
-- Realistic 3D lunar globe with day/night terminator driven by JPL Horizons ephemeris (APPARENT='AIRLESS').
-- 10 curated landing sites (5 historic / baseline + 5 Artemis III south pole candidates). Sites include 72-sector LRO LOLA horizon profiles.
-- Per-site 169-point telemetry windows (T+0h .. T+336h at 2-hour cadence) with solar and Earth az/el, visibility masking, solar efficiency, and battery SoC trajectory (85% initial SoC).
-- CSA rover safety vetoes (slope > 15°), battery survival warnings (continuous eclipse > 24h), and AHP-TOPSIS ranking with vector normalization and configurable weights.
-- Playback controls (1x/5x/20x), launch delay simulator (+0d/+7d/+14d/+30d), side-by-side comparison, and export of ranking/timeline CSV and JSON.
+Selene Vector 301 is a mission planning prototype for the 2026 NASA Space Apps Challenge. It combines JPL Horizons ephemeris, LRO LOLA terrain horizon masking, and vector-normalized AHP-TOPSIS ranking to evaluate lunar landing sites for power, communications, and rover safety.
 
-Data pipeline
--
-- Ephemeris: JPL Horizons export preprocessed into the app's ephemeris.json with APPARENT='AIRLESS' (no atmospheric refraction), 169 samples (14 days at 2-hour resolution).
-- Local horizon masks: 72-sector (0°–355° in 5° steps) derived from LRO LOLA topography. Visibility rule: body_el > horizon_profile_deg[sectorIndex].
-- Solar efficiency: efficiency = sun_visible ? Math.max(0, Math.sin(radians(sun_el)) * 100) : 0
-- CSA safety: sites with max_slope_deg > 15.0 are flagged as a hard safety veto.
-- Ranking: vector-normalized AHP-TOPSIS across solar uptime, DTE uptime (benefit) and max_slope_deg, psr_distance_km (cost). Closeness coefficient C* ∈ [0, 1].
+## NASA Space Apps Judge-Facing Highlights (6 Capabilities)
 
-Development
--
-Prerequisites: Node 18+ recommended
+1. **360° LOLA Local Horizon Sky-Dome**
+   - `PolarHorizonChart` renders a full 72-sector local horizon (5° bins, 0°..355° azimuth) with terrain-aware Sun/Earth visibility checks.
+2. **Earth Libration Track (Figure-8 Analemma)**
+   - Earth's near-horizon path is drawn and explained so DTE drops are interpreted as geometry/topography effects, not random outages.
+3. **T-Minus Sunset / Earthset Countdowns**
+   - Real-time `T-MINUS` cards show next Sun/Earth set or rise events for operations pacing (power and comm windows).
+4. **Flight Director vs. Explorer Modes**
+   - Flight Director mode provides mission-control telemetry depth; Explorer mode translates the same physics into plain-language educational storytelling.
+5. **14-Day Nominal Surface Window Rationale**
+   - Timeline explicitly labels the 336h window as a nominal CLPS/Artemis pre-lunar-night operations segment (half synodic lunar day).
+6. **Idealized Spherical Disclaimer for Custom Coordinates**
+   - Custom-coordinate runs display a scientific transparency badge: measured LOLA 72-sector masks are unavailable, so an idealized spherical horizon fallback is used and polar lighting may be overestimated.
 
-Install
-  npm install
+## Core Features
 
-Run unit tests
-  npm test
+- Realistic 3D lunar globe with ephemeris-driven day/night terminator (`APPARENT='AIRLESS'`, no atmospheric refraction).
+- 10 curated landing sites (historic + Artemis III candidates), each with local terrain profile, slope, and PSR proximity metadata.
+- Per-site 169-point telemetry windows (`T+0h .. T+336h` at 2-hour cadence): Sun/Earth az/el, visibility, solar efficiency, battery SoC.
+- CSA rover constraints: hard veto when slope exceeds 15°, and eclipse-duration survival warnings (>24h continuous darkness).
+- AHP-TOPSIS ranking with configurable weights, side-by-side comparison, launch delay simulation, and CSV/JSON exports.
 
-Build production bundle
-  npm run build
+## Data & Physics Pipeline
 
-Project structure
--
-- src/components — React UI components (3D globe, charts, ranking table)
-- src/lib — Orbital physics, AHP-TOPSIS engine, export helpers, and numerical utilities
-- src/data — Curated sites and precomputed ephemeris JSON
+- Ephemeris source: NASA JPL Horizons export with `APPARENT='AIRLESS'`.
+- Local horizon masking: 72-sector LRO LOLA profile lookup by azimuth index.
+- Spherical fallback for custom coordinates: `h_deg = -degrees(acos(1737.4 / (1737.4 + max(0, alt_km))))`.
+- Solar efficiency model: `efficiency = sun_visible ? max(0, sin(radians(sun_el)) * 100) : 0`.
+- Ranking engine: vector-normalized AHP-TOPSIS over solar uptime, DTE uptime, slope, and PSR distance.
 
-Notes
--
-- The project intentionally uses APPARENT='AIRLESS' and spherical horizon fallbacks for custom coordinates.
-- The UI includes a jsdom-friendly SVG fallback to allow automated tests in CI without WebGL.
+## Development
 
-License
--
+Prerequisite: Node 18+
+
+Install:
+
+```bash
+npm install
+```
+
+Run tests:
+
+```bash
+npm test
+```
+
+Build production bundle:
+
+```bash
+npm run build
+```
+
+## Project Structure
+
+- `src/components` - React UI components (globe, charting, ranking table)
+- `src/lib` - Orbital physics, countdowns, AHP-TOPSIS, export utilities
+- `src/data` - Curated site metadata and precomputed ephemeris assets
+
+## Notes
+
+- The UI ships with a jsdom-friendly SVG fallback for CI environments without WebGL.
+- For custom coordinates, telemetry remains physically consistent with the spherical fallback model but is less terrain-faithful than LOLA-surveyed curated sites.
+
+## License
+
 MIT

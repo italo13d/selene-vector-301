@@ -66,6 +66,23 @@ const TMinusCard: React.FC<{
   );
 };
 
+const CUSTOM_HORIZON_NOTICE = 'Idealized Spherical Horizon (0° flat terrain — LRO LOLA 72-sector mask unavailable for arbitrary coordinates)';
+const NOMINAL_SURFACE_WINDOW_NOTICE = 'Nominal CLPS / Artemis Surface Window (14 Earth Days / 336h — half synodic lunar day, pre-lunar-night operations)';
+
+const ScientificTransparencyBadge: React.FC<{ className?: string }> = ({ className }) => (
+  <div
+    className={`rounded-lg border px-3 py-2 ${className ?? ''}`}
+    style={{ background: '#1E293B80', borderColor: '#F59E0B55' }}
+  >
+    <div className="text-xs font-mono font-bold leading-snug" style={{ color: '#F59E0B' }}>
+      {CUSTOM_HORIZON_NOTICE}
+    </div>
+    <div className="mt-1 text-xs font-mono leading-snug" style={{ color: '#F8FAFCB3' }}>
+      Polar lighting and solar uptime may be overestimated versus LOLA-surveyed sites because local crater-rim masking is unavailable.
+    </div>
+  </div>
+);
+
 // 14-day timeline bar component
 const TimelineBar: React.FC<{ points: Array<{ sun_visible: boolean; earth_visible: boolean }>; onScrub: (idx: number) => void; currentIdx: number }> = ({
   points,
@@ -75,8 +92,16 @@ const TimelineBar: React.FC<{ points: Array<{ sun_visible: boolean; earth_visibl
   const displayPoints = points.slice(0, 168); // ~14 days at 2hr intervals
   return (
     <div>
-      <div className="flex items-center justify-between mb-2">
-        <span className="text-xs font-mono" style={{ color: '#F8FAFC60' }}>14-DAY POWER + DTE TIMELINE</span>
+      <div className="flex items-start justify-between mb-2 gap-3">
+        <div className="space-y-1">
+          <span className="text-xs font-mono" style={{ color: '#F8FAFC60' }}>14-DAY POWER + DTE TIMELINE</span>
+          <div
+            className="text-xs font-mono px-2 py-1 rounded"
+            style={{ color: '#F8FAFCB3', background: '#1E293B', border: '1px solid #3B82F640', maxWidth: 560, lineHeight: 1.35 }}
+          >
+            {NOMINAL_SURFACE_WINDOW_NOTICE}
+          </div>
+        </div>
         <span className="text-xs font-mono" style={{ color: '#F8FAFC40' }}>{points.length} points @ 2hr</span>
       </div>
       <div
@@ -133,20 +158,76 @@ const TimelineBar: React.FC<{ points: Array<{ sun_visible: boolean; earth_visibl
 };
 
 // Explorer Mode insights
-const ExplorerMode: React.FC<{ rankings: SiteRankingEntry[]; offset: LaunchOffset }> = ({ rankings, offset: _offset }) => {
+const ExplorerMode: React.FC<{
+  rankings: SiteRankingEntry[];
+  telemetry: SiteTelemetry | null;
+  site: SiteData;
+  isCustomCoordActive: boolean;
+}> = ({ rankings, telemetry, site, isCustomCoordActive }) => {
   const topSite = rankings.find((e) => !e.slope_veto);
   const apollo = rankings.find((e) => e.site.id === 'apollo-11');
+  const missionWindowHours = 336;
+  const solarHours = telemetry ? (telemetry.solar_uptime_pct / 100) * missionWindowHours : 0;
+  const eclipseHours = telemetry ? Math.max(0, missionWindowHours - solarHours) : 0;
+  const dteBlackoutHours = telemetry ? ((100 - telemetry.dte_uptime_pct) / 100) * missionWindowHours : 0;
+  const hasBatteryFreezeRisk = telemetry ? telemetry.max_continuous_eclipse_hours > 24 : false;
+  const hasSlopeVeto = site.max_slope_deg > 15;
 
   return (
     <div className="space-y-6">
       <div className="p-5 rounded-xl" style={{ background: '#131B2E', border: '1px solid #1E293B' }}>
         <h3 className="font-heading font-bold text-lg mb-3" style={{ color: '#F8FAFC' }}>
+          Mission Story &amp; Survival Brief
+        </h3>
+        <div className="space-y-3 text-sm leading-relaxed" style={{ color: '#F8FAFCB3' }}>
+          <p>
+            In this nominal 14-Earth-day surface window, <strong style={{ color: '#F8FAFC' }}>{site.name}</strong> gets
+            {' '}
+            <strong style={{ color: '#F59E0B' }}>{telemetry ? `${telemetry.solar_uptime_pct.toFixed(1)}% sunlight (~${solarHours.toFixed(0)}h)` : '--'}</strong>
+            {' '}
+            and
+            {' '}
+            <strong style={{ color: '#F8FAFC' }}>{telemetry ? `~${eclipseHours.toFixed(0)}h in shadow` : '--'}</strong>.
+            Long eclipse stretches can cold-soak exposed hardware toward approximately -170C.
+          </p>
+          <p style={{ color: hasBatteryFreezeRisk ? '#FCA5A5' : '#F8FAFCB3' }}>
+            {telemetry
+              ? hasBatteryFreezeRisk
+                ? `Warning: maximum continuous eclipse reaches ${telemetry.max_continuous_eclipse_hours.toFixed(1)}h (above the 24h battery-survival limit), increasing freeze risk for batteries and avionics.`
+                : `Maximum continuous eclipse is ${telemetry.max_continuous_eclipse_hours.toFixed(1)}h, which remains below the 24h battery-survival warning threshold.`
+              : 'Telemetry unavailable for eclipse-risk translation.'}
+          </p>
+          <p>
+            Earth appears to trace a figure-8 (libration analemma) close to the horizon. Even while the lander is stationary,
+            crater rims can block that low Earth track and drop line-of-sight radio.
+            {' '}
+            <strong style={{ color: '#06B6D4' }}>
+              {telemetry ? `Expected DTE blackout is about ${dteBlackoutHours.toFixed(0)}h in this window (${(100 - telemetry.dte_uptime_pct).toFixed(1)}%).` : 'DTE uptime unavailable.'}
+            </strong>
+          </p>
+          <p style={{ color: hasSlopeVeto ? '#FCA5A5' : '#F8FAFCB3' }}>
+            CSA rover mobility limit is 15°. This site is
+            {' '}
+            <strong style={{ color: hasSlopeVeto ? '#EF4444' : '#22c55e' }}>{site.max_slope_deg.toFixed(1)}°</strong>
+            {' '}
+            —
+            {' '}
+            {hasSlopeVeto
+              ? 'above the limit, so wheel slip and tip-over risk become operationally unacceptable (hard veto).'
+              : 'within limit, lowering tip-over risk during traverses.'}
+          </p>
+        </div>
+        {isCustomCoordActive && <ScientificTransparencyBadge className="mt-4" />}
+      </div>
+
+      <div className="p-5 rounded-xl" style={{ background: '#131B2E', border: '1px solid #1E293B' }}>
+        <h3 className="font-heading font-bold text-lg mb-3" style={{ color: '#F8FAFC' }}>
           🌑 Lunar South Pole — Perpetual Twilight
         </h3>
         <p className="text-sm leading-relaxed mb-4" style={{ color: '#F8FAFC80' }}>
-          Sites near the lunar south pole experience <strong style={{ color: '#F59E0B' }}>near-continuous sunlight</strong> — 
-          the Sun grazes the horizon without setting, delivering steady low-angle illumination 
-          year-round. This is caused by the Moon's minimal axial tilt (1.54°), which keeps polar 
+          Sites near the lunar south pole experience <strong style={{ color: '#F59E0B' }}>near-continuous sunlight</strong> —
+          the Sun grazes the horizon without setting, delivering steady low-angle illumination
+          year-round. This is caused by the Moon's minimal axial tilt (1.54°), which keeps polar
           ridges in permanent or near-permanent daylight.
         </p>
         {topSite && (
@@ -167,11 +248,11 @@ const ExplorerMode: React.FC<{ rankings: SiteRankingEntry[]; offset: LaunchOffse
           🌍 Earth Libration — The Figure-8 Dance
         </h3>
         <p className="text-sm leading-relaxed" style={{ color: '#F8FAFC80' }}>
-          From the lunar south pole, Earth appears at a nearly constant azimuth — hovering just 
-          above the horizon in a slow figure-8 libration pattern. This is because the Moon's 
-          slight orbital eccentricity and tilt cause Earth to "wobble" in the sky, tracing 
-          a path called the <em>analemma</em>. For missions at high latitudes, Earth's 
-          low elevation means it can dip below crater rims, creating brief 
+          From the lunar south pole, Earth appears at a nearly constant azimuth — hovering just
+          above the horizon in a slow figure-8 libration pattern. This is because the Moon's
+          slight orbital eccentricity and tilt cause Earth to "wobble" in the sky, tracing
+          a path called the <em>analemma</em>. For missions at high latitudes, Earth's
+          low elevation means it can dip below crater rims, creating brief
           <strong style={{ color: '#06B6D4' }}> communication blackout windows</strong>.
         </p>
       </div>
@@ -183,8 +264,8 @@ const ExplorerMode: React.FC<{ rankings: SiteRankingEntry[]; offset: LaunchOffse
         {apollo && (
           <div className="space-y-3">
             <p className="text-sm leading-relaxed" style={{ color: '#F8FAFC80' }}>
-              Apollo 11's Mare Tranquillitatis landing site demonstrates the <strong>equatorial day-night cycle</strong>: 
-              a sharp ~354-hour (14.75 Earth-day) on/off pattern. The site spends half its lunar day 
+              Apollo 11's Mare Tranquillitatis landing site demonstrates the <strong>equatorial day-night cycle</strong>:
+              a sharp ~354-hour (14.75 Earth-day) on/off pattern. The site spends half its lunar day
               in complete darkness — unusable for solar-powered missions.
             </p>
             <div className="grid grid-cols-2 gap-3">
@@ -208,7 +289,7 @@ const ExplorerMode: React.FC<{ rankings: SiteRankingEntry[]; offset: LaunchOffse
               )}
             </div>
             <p className="text-xs font-mono" style={{ color: '#F8FAFC40' }}>
-              Polar sites provide dramatically better power and comm availability — 
+              Polar sites provide dramatically better power and comm availability —
               critical for crewed surface operations and rover endurance.
             </p>
           </div>
@@ -288,6 +369,7 @@ export default function App() {
   };
 
   const displaySite = customCoords.active && telemetry ? telemetry.site : selectedSite;
+  const isCustomCoordActive = customCoords.active || selectedSiteId === 'custom' || displaySite.id === 'custom';
   const [compareActive, setCompareActive] = useState(false);
   const [compareTargetId, setCompareTargetId] = useState<string>(() => {
     // default to apollo-11 if present, otherwise first other site
@@ -574,6 +656,7 @@ export default function App() {
                   <div className="text-xs font-mono mt-1" style={{ color: '#F8FAFC60' }}>
                     {displaySite.category} · {displaySite.lat.toFixed(3)}°N, {displaySite.lon.toFixed(3)}°E · {displaySite.alt_km} km ASL
                   </div>
+                  {isCustomCoordActive && <ScientificTransparencyBadge className="mt-2 max-w-3xl" />}
                 </div>
                 <div className="flex items-center gap-2">
                   {displaySite.max_slope_deg > 15 && (
@@ -700,6 +783,7 @@ export default function App() {
                     {currentPoint ? (
                       <div className="p-4 rounded-lg" style={{ background: '#131B2E', border: '1px solid #1E293B' }}>
                         <div className="text-xs font-mono mb-3" style={{ color: '#F8FAFC60' }}>CURRENT TELEMETRY — {currentPoint.t}</div>
+                        {isCustomCoordActive && <ScientificTransparencyBadge className="mb-3" />}
                         <div className="grid grid-cols-2 gap-3">
                           <div>
                             <div className="text-xs font-mono mb-1" style={{ color: '#F8FAFC60' }}>SOLAR EFFICIENCY</div>
@@ -883,7 +967,12 @@ export default function App() {
                 ))}
               </div>
 
-              <ExplorerMode rankings={rankings} offset={offset} />
+              <ExplorerMode
+                rankings={rankings}
+                telemetry={telemetry}
+                site={displaySite}
+                isCustomCoordActive={isCustomCoordActive}
+              />
             </div>
           )}
         </main>
