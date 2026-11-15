@@ -4,6 +4,7 @@ import {
   MapPin, Gauge, Activity, Eye, EyeOff
 } from 'lucide-react';
 import { PolarHorizonChart } from './components/PolarHorizonChart';
+import LunarOrbitalGlobe from './components/LunarOrbitalGlobe';
 import { SiteRankingTable } from './components/SiteRankingTable';
 import {
   getSiteTelemetry, getCustomCoordTelemetry, getAllSites,
@@ -591,11 +592,27 @@ export default function App() {
                 </div>
                 {compareActive && (
                   <div>
-                    <select value={compareTargetId} onChange={(e) => setCompareTargetId(e.target.value)} className="mb-2 text-xs p-1" aria-label="Compare target select">
-                      {sites.filter((s) => s.id !== displaySite.id).map((s) => (
-                        <option key={s.id} value={s.id}>{s.name}</option>
-                      ))}
-                    </select>
+                    <div style={{ position: 'relative' }}>
+                      <div style={{ position: 'relative' }}>
+                        <button
+                          aria-label="Compare target select"
+                          onClick={() => setCompareActive((c) => !c)}
+                          className="px-2 py-1 text-xs"
+                          style={{ background: '#090D16', border: '1px solid #1E293B', color: '#E2E8F0' }}
+                        >
+                          {sites.find((s) => s.id === compareTargetId)?.name ?? 'Select site'}
+                        </button>
+                        {compareActive && (
+                          <div role="listbox" style={{ position: 'absolute', zIndex: 50, marginTop: 6, background: '#090D16', border: '1px solid #1E293B', padding: 8, minWidth: 180, borderRadius: 8 }}>
+                            {sites.filter((s) => s.id !== displaySite.id).map((s) => (
+                              <button key={s.id} onClick={() => { setCompareTargetId(s.id); setCompareActive(false); }} style={{ display: 'block', width: '100%', textAlign: 'left', padding: '8px 10px', background: 'transparent', color: '#E2E8F0', border: 'none', borderRadius: 6 }}>
+                                {s.name}
+                              </button>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    </div>
                     {compareTelemetry && (
                       <div className="grid grid-cols-2 gap-3 text-xs font-mono">
                         <div style={{ border: '1px solid #1E293B', padding: 8 }}>
@@ -633,6 +650,17 @@ export default function App() {
                       currentPointIndex={timelineIdx}
                     />
                   )}
+                </div>
+                <div>
+                  <LunarOrbitalGlobe
+                    sites={sites}
+                    selectedSiteId={selectedSiteId}
+                    onSiteSelect={handleSiteSelect}
+                    customLat={customCoords.active ? parseFloat(customCoords.lat || '0') : undefined}
+                    customLon={customCoords.active ? parseFloat(customCoords.lon || '0') : undefined}
+                    timelineIdx={timelineIdx}
+                    telemetryPoints={telemetry?.points ?? []}
+                  />
                 </div>
 
                 {/* Operational telemetry */}
