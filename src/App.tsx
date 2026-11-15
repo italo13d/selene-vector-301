@@ -24,6 +24,7 @@ const LAUNCH_OFFSETS: { label: string; value: LaunchOffset }[] = [
 
 type MissionProgramTag = 'Apollo' | 'Artemis III' | 'CLPS';
 type CountdownAlertState = 'nominal' | 'warning' | 'critical';
+type GuidedExperimentId = 'pole-vs-apollo-11' | 'launch-delay-14d' | 'steep-crater-veto';
 
 const MISSION_PROGRAM_STYLES: Record<MissionProgramTag, { background: string; border: string; color: string }> = {
   Apollo: { background: '#06B6D41F', border: '#06B6D455', color: '#67E8F9' },
@@ -37,11 +38,10 @@ const COMPARISON_WINDOW_POINTS = 169;
 
 type DeltaDirection = 'benefit' | 'cost';
 
-function sanitizeComparedSiteIds(siteIds: string[], activeSiteId: string, sites: SiteData[]): string[] {
+function sanitizeComparedSiteIds(siteIds: string[], sites: SiteData[]): string[] {
   return siteIds
     .filter((siteId, index, arr) => (
       arr.indexOf(siteId) === index
-      && siteId !== activeSiteId
       && sites.some((site) => site.id === siteId)
     ))
     .slice(0, MAX_PINNED_COMPARE_SITES);
@@ -356,7 +356,18 @@ const ExplorerMode: React.FC<{
   telemetry: SiteTelemetry | null;
   site: SiteData;
   isCustomCoordActive: boolean;
-}> = ({ rankings, telemetry, site, isCustomCoordActive }) => {
+  onRunGuidedExperiment: (experimentId: GuidedExperimentId) => void;
+  activeGuidedExperimentId: GuidedExperimentId | null;
+  guidedExperimentTakeaway: string | null;
+}> = ({
+  rankings,
+  telemetry,
+  site,
+  isCustomCoordActive,
+  onRunGuidedExperiment,
+  activeGuidedExperimentId,
+  guidedExperimentTakeaway,
+}) => {
   const topSite = rankings.find((e) => !e.slope_veto);
   const apollo = rankings.find((e) => e.site.id === 'apollo-11');
   const missionWindowHours = 336;
@@ -395,7 +406,7 @@ const ExplorerMode: React.FC<{
             crater rims can block that low Earth track and drop line-of-sight radio.
             {' '}
             <strong style={{ color: '#06B6D4' }}>
-              {telemetry ? `Expected DTE blackout is about ${dteBlackoutHours.toFixed(0)}h in this window (${(100 - telemetry.dte_uptime_pct).toFixed(1)}%).` : 'DTE uptime unavailable.'}
+              {telemetry ? `Expected DTE (Direct-to-Earth) blackout is about ${dteBlackoutHours.toFixed(0)}h in this window (${(100 - telemetry.dte_uptime_pct).toFixed(1)}%).` : 'Direct-to-Earth uptime unavailable.'}
             </strong>
           </p>
           <p style={{ color: hasSlopeVeto ? '#FCA5A5' : '#F8FAFCB3' }}>
@@ -409,6 +420,44 @@ const ExplorerMode: React.FC<{
               ? 'above the limit, so wheel slip and tip-over risk become operationally unacceptable (hard veto).'
               : 'within limit, lowering tip-over risk during traverses.'}
           </p>
+        </div>
+        <div
+          className="mt-4 pt-3"
+          style={{ borderTop: '1px solid #1E293B' }}
+        >
+          <div className="flex flex-col gap-2 lg:flex-row lg:items-center">
+            <div className="text-xs font-mono" style={{ color: '#F8FAFC80' }}>Try a Guided Experiment</div>
+            <div className="flex flex-wrap gap-2">
+              {([
+                { id: 'pole-vs-apollo-11', label: '1. Pole vs. Apollo 11' },
+                { id: 'launch-delay-14d', label: '2. +14d Launch Delay' },
+                { id: 'steep-crater-veto', label: '3. Steep Crater Veto (>15°)' },
+              ] as const).map((experiment) => {
+                const isActive = activeGuidedExperimentId === experiment.id;
+                return (
+                  <button
+                    key={experiment.id}
+                    type="button"
+                    onClick={() => onRunGuidedExperiment(experiment.id)}
+                    className="px-2.5 py-1.5 rounded text-xs font-mono transition-colors"
+                    style={{
+                      background: isActive ? '#3B82F6' : '#090D16',
+                      border: `1px solid ${isActive ? '#3B82F6' : '#334155'}`,
+                      color: isActive ? '#F8FAFC' : '#CBD5E1',
+                    }}
+                    aria-pressed={isActive}
+                  >
+                    {experiment.label}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+          {guidedExperimentTakeaway && (
+            <p className="mt-2 text-xs font-mono" style={{ color: '#67E8F9' }}>
+              {guidedExperimentTakeaway}
+            </p>
+          )}
         </div>
         {isCustomCoordActive && <ScientificTransparencyBadge className="mt-4" />}
       </div>
@@ -429,7 +478,7 @@ const ExplorerMode: React.FC<{
             <div className="font-heading font-bold" style={{ color: '#F8FAFC' }}>{topSite.site.name}</div>
             <div className="text-sm mt-1" style={{ color: '#F8FAFC80' }}>
               Solar uptime: <strong style={{ color: '#F59E0B' }}>{topSite.solar_uptime_pct.toFixed(1)}%</strong> ·
-              DTE uptime: <strong style={{ color: '#06B6D4' }}>{topSite.dte_uptime_pct.toFixed(1)}%</strong> ·
+              DTE (Direct-to-Earth) uptime: <strong style={{ color: '#06B6D4' }}>{topSite.dte_uptime_pct.toFixed(1)}%</strong> ·
               AHP-TOPSIS Score: <strong style={{ color: '#F8FAFC' }}>{topSite.topsis_score.toFixed(3)}</strong>
             </div>
           </div>
@@ -466,8 +515,8 @@ const ExplorerMode: React.FC<{
                 <div className="text-xs font-mono mb-1" style={{ color: '#3B82F6' }}>APOLLO 11 — EQUATORIAL</div>
                 <div className="text-xs font-mono space-y-1">
                   <div style={{ color: '#F8FAFC80' }}>Solar: <span style={{ color: '#F59E0B' }}>{apollo.solar_uptime_pct.toFixed(1)}%</span></div>
-                  <div style={{ color: '#F8FAFC80' }}>DTE: <span style={{ color: '#06B6D4' }}>{apollo.dte_uptime_pct.toFixed(1)}%</span></div>
-                  <div style={{ color: '#F8FAFC80' }}>PSR: <span style={{ color: '#3B82F6' }}>{apollo.psr_distance_km.toFixed(0)} km</span></div>
+                  <div style={{ color: '#F8FAFC80' }}>DTE (Direct-to-Earth): <span style={{ color: '#06B6D4' }}>{apollo.dte_uptime_pct.toFixed(1)}%</span></div>
+                  <div style={{ color: '#F8FAFC80' }}>PSR (Permanently Shadowed Region): <span style={{ color: '#3B82F6' }}>{apollo.psr_distance_km.toFixed(0)} km</span></div>
                 </div>
               </div>
               {topSite && (
@@ -475,8 +524,8 @@ const ExplorerMode: React.FC<{
                   <div className="text-xs font-mono mb-1" style={{ color: '#F59E0B' }}>BEST POLAR SITE</div>
                   <div className="text-xs font-mono space-y-1">
                     <div style={{ color: '#F8FAFC80' }}>Solar: <span style={{ color: '#F59E0B' }}>{topSite.solar_uptime_pct.toFixed(1)}%</span></div>
-                    <div style={{ color: '#F8FAFC80' }}>DTE: <span style={{ color: '#06B6D4' }}>{topSite.dte_uptime_pct.toFixed(1)}%</span></div>
-                    <div style={{ color: '#F8FAFC80' }}>PSR: <span style={{ color: '#3B82F6' }}>{topSite.psr_distance_km.toFixed(1)} km</span></div>
+                    <div style={{ color: '#F8FAFC80' }}>DTE (Direct-to-Earth): <span style={{ color: '#06B6D4' }}>{topSite.dte_uptime_pct.toFixed(1)}%</span></div>
+                    <div style={{ color: '#F8FAFC80' }}>PSR (Permanently Shadowed Region): <span style={{ color: '#3B82F6' }}>{topSite.psr_distance_km.toFixed(1)} km</span></div>
                   </div>
                 </div>
               )}
@@ -505,21 +554,21 @@ const ExplorerTelemetryCards: React.FC<{
       icon: <Sun size={14} />,
     },
     {
-      label: 'DTE Link',
+      label: 'DTE (Direct-to-Earth) Link',
       value: currentPoint ? (currentPoint.earth_visible ? 'LINK ACTIVE' : 'BLOCKED') : '--',
-      subtitle: 'Crater rims can hide Earth near the horizon and interrupt direct comms.',
+      subtitle: 'Crater rims can hide Earth near the horizon and interrupt direct-to-Earth comms.',
       color: currentPoint?.earth_visible ? '#06B6D4' : '#EF4444',
       icon: <Radio size={14} />,
     },
     {
-      label: 'Battery SoC',
+      label: 'Battery SoC (Battery State of Charge)',
       value: currentPoint?.battery_soc_pct !== undefined ? `${currentPoint.battery_soc_pct.toFixed(1)}%` : '--',
       subtitle: 'Long shadow periods force battery-only survival operations.',
       color: currentPoint?.battery_soc_pct !== undefined && currentPoint.battery_soc_pct < 20 ? '#EF4444' : '#22c55e',
       icon: <Gauge size={14} />,
     },
     {
-      label: 'PSR Distance',
+      label: 'PSR (Permanently Shadowed Region) Distance',
       value: `${site.psr_distance_km.toFixed(1)} km`,
       subtitle: 'Closer ice targets are useful, but shadowed terrain raises ops risk.',
       color: '#3B82F6',
@@ -564,8 +613,17 @@ export default function App() {
     lat: '', lon: '', alt_km: '', active: false,
   });
   const [siteQuery, setSiteQuery] = useState('');
+  const [guidedExperimentTakeaway, setGuidedExperimentTakeaway] = useState<string | null>(null);
+  const [activeGuidedExperimentId, setActiveGuidedExperimentId] = useState<GuidedExperimentId | null>(null);
 
   const sites = useMemo(() => getAllSites(), []);
+  const highestSlopeVetoSite = useMemo(() => (
+    sites
+      .filter((site) => site.max_slope_deg > 15)
+      .sort((a, b) => b.max_slope_deg - a.max_slope_deg)[0]
+    ?? sites.find((site) => site.id === 'faustini-rim-a')
+    ?? null
+  ), [sites]);
 
   // Load telemetry for the selected site
   const telemetry: SiteTelemetry | null = useMemo(() => {
@@ -656,9 +714,11 @@ export default function App() {
   };
 
   const displaySite = customCoords.active && telemetry ? telemetry.site : selectedSite;
+  const activeSiteId = displaySite.id;
   const isCustomCoordActive = customCoords.active || selectedSiteId === 'custom' || displaySite.id === 'custom';
   const [isCompareOpen, setIsCompareOpen] = useState(false);
   const [comparedSiteIds, setComparedSiteIds] = useState<string[]>([]);
+  const [focusedGlobeSiteId, setFocusedGlobeSiteId] = useState<string>(selectedSiteId);
 
   const selectedRankingEntry = useMemo(
     () => rankings.find((entry) => entry.site.id === displaySite.id),
@@ -671,23 +731,40 @@ export default function App() {
   );
 
   const defaultComparedSiteId = useMemo(() => {
-    const apollo = sites.find((site) => site.id === 'apollo-11' && site.id !== displaySite.id);
+    const apollo = sites.find((site) => site.id === 'apollo-11' && site.id !== activeSiteId);
     if (apollo) return apollo.id;
-    return sites.find((site) => site.id !== displaySite.id)?.id;
-  }, [sites, displaySite.id]);
+    return sites.find((site) => site.id !== activeSiteId)?.id;
+  }, [sites, activeSiteId]);
 
   useEffect(() => {
     setComparedSiteIds((current) => {
-      const sanitized = sanitizeComparedSiteIds(current, displaySite.id, sites);
+      const sanitized = sanitizeComparedSiteIds(current, sites);
       return sanitized.length === current.length && sanitized.every((id, idx) => id === current[idx])
         ? current
         : sanitized;
     });
-  }, [displaySite.id, sites]);
+  }, [sites]);
+
+  useEffect(() => {
+    setFocusedGlobeSiteId((current) => (current === activeSiteId ? current : activeSiteId));
+  }, [activeSiteId]);
+
+  const focusGlobeOnSite = useCallback((siteId: string) => {
+    if (!siteId) return;
+    if (siteId !== activeSiteId && !sites.some((site) => site.id === siteId)) return;
+    setFocusedGlobeSiteId(siteId);
+  }, [activeSiteId, sites]);
+
+  const focusedGlobeSite = useMemo(
+    () => (focusedGlobeSiteId === activeSiteId
+      ? displaySite
+      : sites.find((site) => site.id === focusedGlobeSiteId) ?? null),
+    [focusedGlobeSiteId, activeSiteId, displaySite, sites]
+  );
 
   const availableCompareSites = useMemo(
-    () => sites.filter((site) => site.id !== displaySite.id && !comparedSiteIds.includes(site.id)),
-    [sites, displaySite.id, comparedSiteIds]
+    () => sites.filter((site) => site.id !== activeSiteId && !comparedSiteIds.includes(site.id)),
+    [sites, activeSiteId, comparedSiteIds]
   );
 
   const comparedSiteDetails = useMemo(
@@ -702,22 +779,22 @@ export default function App() {
     if (!nextOpen) return;
 
     setComparedSiteIds((current) => {
-      const sanitized = sanitizeComparedSiteIds(current, displaySite.id, sites);
+      const sanitized = sanitizeComparedSiteIds(current, sites);
       if (sanitized.length > 0) return sanitized;
       return defaultComparedSiteId ? [defaultComparedSiteId] : [];
     });
-  }, [defaultComparedSiteId, displaySite.id, sites]);
+  }, [defaultComparedSiteId, sites]);
 
   const handleAddComparedSite = useCallback((siteId: string) => {
     if (!siteId) return;
 
     setComparedSiteIds((current) => {
-      const sanitized = sanitizeComparedSiteIds(current, displaySite.id, sites);
+      const sanitized = sanitizeComparedSiteIds(current, sites);
 
       if (
         sanitized.length >= MAX_PINNED_COMPARE_SITES
         || sanitized.includes(siteId)
-        || siteId === displaySite.id
+        || siteId === activeSiteId
         || !sites.some((site) => site.id === siteId)
       ) {
         return sanitized;
@@ -725,11 +802,39 @@ export default function App() {
 
       return [...sanitized, siteId];
     });
-  }, [displaySite.id, sites]);
+  }, [activeSiteId, sites]);
 
   const handleRemoveComparedSite = useCallback((siteId: string) => {
     setComparedSiteIds((current) => current.filter((id) => id !== siteId));
   }, []);
+
+  const handleGuidedExperiment = useCallback((experimentId: GuidedExperimentId) => {
+    setActiveGuidedExperimentId(experimentId);
+
+    if (experimentId === 'pole-vs-apollo-11') {
+      handleSiteSelect('shackleton-rim');
+      setOffset('+0d');
+      setTimelineIdx(0);
+      setIsCompareOpen(true);
+      setComparedSiteIds(() => sanitizeComparedSiteIds(['apollo-11'], sites));
+      setGuidedExperimentTakeaway('Validation: Equatorial sunlight can hit ~95% panel efficiency near lunar noon, about 27x stronger than the ~3-4% charging from grazing polar sunlight.');
+      return;
+    }
+
+    if (experimentId === 'launch-delay-14d') {
+      handleSiteSelect('shackleton-rim');
+      setOffset('+14d');
+      setTimelineIdx(0);
+      setGuidedExperimentTakeaway('Validation: A +14d scrub shifts the lunar terminator phase and Earth libration line-of-sight window, moving both power and direct-to-Earth timing.');
+      return;
+    }
+
+    const vetoSite = highestSlopeVetoSite ?? sites.find((site) => site.id === 'faustini-rim-a') ?? null;
+    if (vetoSite) {
+      handleSiteSelect(vetoSite.id);
+    }
+    setGuidedExperimentTakeaway(`Validation: Slopes above 15° (like ${vetoSite ? `${vetoSite.name} at ${vetoSite.max_slope_deg.toFixed(1)}°` : 'this steep crater rim'}) exceed rover stability limits and trigger a tip-over safety veto.`);
+  }, [handleSiteSelect, highestSlopeVetoSite, sites]);
 
   const comparisonSiteColumns = useMemo(() => {
     if (!telemetry) return [];
@@ -742,6 +847,8 @@ export default function App() {
     }];
 
     comparedSiteIds.forEach((siteId) => {
+      if (siteId === activeSiteId) return;
+
       try {
         const comparedTelemetry = getSiteTelemetry(siteId, offset);
         columns.push({
@@ -756,7 +863,7 @@ export default function App() {
     });
 
     return columns;
-  }, [telemetry, displaySite.id, selectedRankingEntry, comparedSiteIds, offset, rankingBySiteId]);
+  }, [telemetry, displaySite.id, selectedRankingEntry, comparedSiteIds, offset, rankingBySiteId, activeSiteId]);
 
   const activeComparisonColumn = comparisonSiteColumns[0];
   // Playback state
@@ -1114,7 +1221,21 @@ export default function App() {
                             className="inline-flex items-center gap-1 px-2 py-1 rounded-full text-xs font-mono"
                             style={{ background: '#1E293B', color: '#F8FAFCCC', border: '1px solid #3B82F640' }}
                           >
-                            {site.name}
+                            <button
+                              type="button"
+                              onClick={() => focusGlobeOnSite(site.id)}
+                              aria-label={`Focus pinned chip ${site.name} on globe`}
+                              className="transition-opacity hover:opacity-80"
+                              style={{
+                                color: '#F8FAFCCC',
+                                background: 'transparent',
+                                border: 'none',
+                                padding: 0,
+                                cursor: 'pointer',
+                              }}
+                            >
+                              {site.name}
+                            </button>
                             <button
                               type="button"
                               onClick={() => handleRemoveComparedSite(site.id)}
@@ -1144,6 +1265,7 @@ export default function App() {
                             const slopeVeto = column.telemetry.site.max_slope_deg > 15;
                             const activeTelemetry = activeComparisonColumn?.telemetry;
                             const activeScore = activeComparisonColumn?.rankingEntry?.topsis_score;
+                            const isPinnedColumn = !column.isActive;
 
                             const solarDelta = formatDelta(
                               column.telemetry.solar_uptime_pct,
@@ -1177,9 +1299,22 @@ export default function App() {
                               <div
                                 key={column.id}
                                 className="rounded-lg p-3 space-y-2"
+                                onClick={isPinnedColumn ? () => focusGlobeOnSite(column.id) : undefined}
+                                onKeyDown={isPinnedColumn
+                                  ? (event) => {
+                                    if (event.key === 'Enter' || event.key === ' ') {
+                                      event.preventDefault();
+                                      focusGlobeOnSite(column.id);
+                                    }
+                                  }
+                                  : undefined}
+                                role={isPinnedColumn ? 'button' : undefined}
+                                tabIndex={isPinnedColumn ? 0 : undefined}
+                                aria-label={isPinnedColumn ? `Focus pinned column ${column.telemetry.site.name} on globe` : undefined}
                                 style={{
                                   background: '#131B2E',
                                   border: column.isActive ? '1px solid #3B82F680' : '1px solid #1E293B',
+                                  cursor: isPinnedColumn ? 'pointer' : 'default',
                                 }}
                               >
                                 <div className="flex items-start justify-between gap-2">
@@ -1321,7 +1456,10 @@ export default function App() {
                       <LunarOrbitalGlobe
                         sites={sites}
                         selectedSiteId={selectedSiteId}
+                        comparedSiteIds={comparedSiteIds}
                         onSiteSelect={handleSiteSelect}
+                        onPinnedSiteFocus={focusGlobeOnSite}
+                        focusedSite={focusedGlobeSite}
                         customLat={customCoords.active ? parseFloat(customCoords.lat || '0') : undefined}
                         customLon={customCoords.active ? parseFloat(customCoords.lon || '0') : undefined}
                         timelineIdx={timelineIdx}
@@ -1576,6 +1714,9 @@ export default function App() {
                 telemetry={telemetry}
                 site={displaySite}
                 isCustomCoordActive={isCustomCoordActive}
+                onRunGuidedExperiment={handleGuidedExperiment}
+                activeGuidedExperimentId={activeGuidedExperimentId}
+                guidedExperimentTakeaway={guidedExperimentTakeaway}
               />
               <ExplorerTelemetryCards
                 currentPoint={currentPoint}

@@ -73,6 +73,30 @@ describe('Functional requirements (REQ-UI-01, REQ-EXP-01)', () => {
     expect(screen.getAllByText(/Nobile/i).length).toBeGreaterThan(0);
   });
 
+  it('REQ-FUNC-04 / REQ-VIS-04: pinned compare clicks preserve pins and active site while focusing the globe', () => {
+    render(<App />);
+
+    const activeSiteHeading = () => screen.getByRole('heading', { level: 2, name: /Shackleton/i });
+    const removePinnedApollo = () => screen.getByRole('button', { name: /Remove Apollo 11/i });
+
+    fireEvent.click(screen.getByRole('checkbox', { name: /Enable/i }));
+
+    expect(activeSiteHeading()).toBeInTheDocument();
+    expect(removePinnedApollo()).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: /Focus pinned chip Apollo 11/i }));
+    expect(activeSiteHeading()).toBeInTheDocument();
+    expect(removePinnedApollo()).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: /Focus pinned column Apollo 11/i }));
+    expect(activeSiteHeading()).toBeInTheDocument();
+    expect(removePinnedApollo()).toBeInTheDocument();
+
+    fireEvent.click(screen.getByText(/PINNED: Apollo 11/i));
+    expect(activeSiteHeading()).toBeInTheDocument();
+    expect(removePinnedApollo()).toBeInTheDocument();
+  });
+
   it('Custom coordinates submission produces a custom site telemetry with 72-sector horizon', () => {
     render(<App />);
     // fill lat, lon, alt inputs

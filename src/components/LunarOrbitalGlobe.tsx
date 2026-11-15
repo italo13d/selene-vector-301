@@ -10,6 +10,31 @@ type MoonTextureRuntimeCache = {
   loadPromise: Promise<THREE.Texture | null> | null;
 };
 
+type PinnedSiteStyle = {
+  haloHex: number;
+  haloCss: string;
+  labelBackground: string;
+  labelBorder: string;
+  labelText: string;
+};
+
+const PINNED_SITE_STYLES: readonly PinnedSiteStyle[] = [
+  {
+    haloHex: 0x06b6d4,
+    haloCss: '#06B6D4',
+    labelBackground: '#042430',
+    labelBorder: '#06B6D4AA',
+    labelText: '#67E8F9',
+  },
+  {
+    haloHex: 0xf59e0b,
+    haloCss: '#F59E0B',
+    labelBackground: '#2F1D05',
+    labelBorder: '#F59E0BAA',
+    labelText: '#FCD34D',
+  },
+];
+
 function markTextureAsSrgb(texture: THREE.Texture) {
   try {
     (texture as any).colorSpace = (THREE as any).SRGBColorSpace ?? THREE.SRGBColorSpace;
@@ -81,17 +106,40 @@ function ensureMoonTextureLoad(): Promise<THREE.Texture | null> {
 interface Props {
   sites: SiteData[];
   selectedSiteId: string;
+  comparedSiteIds?: string[];
   onSiteSelect: (id: string) => void;
+  onPinnedSiteFocus?: (id: string) => void;
+  focusedSite?: SiteData | null;
   customLat?: number;
   customLon?: number;
   timelineIdx?: number;
   telemetryPoints?: any[];
 }
 
-export const LunarOrbitalGlobe: React.FC<Props> = ({ sites, selectedSiteId, onSiteSelect, customLat, customLon, timelineIdx = 0, telemetryPoints = [] }) => {
+export const LunarOrbitalGlobe: React.FC<Props> = ({
+  sites,
+  selectedSiteId,
+  comparedSiteIds = [],
+  onSiteSelect,
+  onPinnedSiteFocus,
+  focusedSite,
+  customLat,
+  customLon,
+  timelineIdx = 0,
+  telemetryPoints = [],
+}) => {
   const mountRef = useRef<HTMLDivElement | null>(null);
   // expose preset setter to header buttons outside the renderer effect
   const setCameraPresetRef = useRef<(p: 'south' | 'global') => void>(() => {});
+  const focusCameraOnSiteRef = useRef<(site: SiteData | null) => void>(() => {});
+
+  const handleSiteInteraction = (siteId: string, isPinned: boolean) => {
+    if (isPinned) {
+      onPinnedSiteFocus?.(siteId);
+      return;
+    }
+    onSiteSelect(siteId);
+  };
 
   useEffect(() => {
     const mount = mountRef.current;
@@ -170,8 +218,35 @@ export const LunarOrbitalGlobe: React.FC<Props> = ({ sites, selectedSiteId, onSi
       }
       isCameraTransitioning = true;
     }
+
+    function focusCameraOnSite(site: SiteData | null) {
+      if (!site || Number.isNaN(site.lat) || Number.isNaN(site.lon)) return;
+
+      const siteVector = latLonToCartesian(site.lat, site.lon, 1);
+      const siteRadius = Math.sqrt(
+        siteVector.x * siteVector.x
+        + siteVector.y * siteVector.y
+        + siteVector.z * siteVector.z,
+      ) || 1;
+
+      cameraTarget.az = Math.atan2(siteVector.x, siteVector.z);
+      cameraTarget.pol = Math.max(
+        -Math.PI / 2 + 0.1,
+        Math.min(Math.PI / 2 - 0.1, Math.asin(siteVector.y / siteRadius)),
+      );
+      cameraTarget.dist = Math.max(2.2, Math.min(12, distance.value));
+      isCameraTransitioning = true;
+    }
+
     // expose to header
     setCameraPresetRef.current = setCameraPreset;
+    focusCameraOnSiteRef.current = focusCameraOnSite;
+
+    if (focusedSite) {
+      focusCameraOnSite(focusedSite);
+    } else {
+      setCameraPreset('south');
+    }
 
     function onPointerDown(e: PointerEvent) {
       isDragging = true;
@@ -300,6 +375,18 @@ export const LunarOrbitalGlobe: React.FC<Props> = ({ sites, selectedSiteId, onSi
     hudContainer.style.pointerEvents = 'none';
     overlay.appendChild(hudContainer);
 
+    const pinnedStyleBySiteId = new Map<string, PinnedSiteStyle>();
+    comparedSiteIds.forEach((siteId, idx) => {
+      const style = PINNED_SITE_STYLES[idx];
+      if (!style || siteId === selectedSiteId) return;
+      pinnedStyleBySiteId.set(siteId, style);
+    });
+
+    const handleMarkerInteraction = (siteId: string) => {
+      if (!siteId) return;
+      handleSiteInteraction(siteId, pinnedStyleBySiteId.has(siteId));
+    };
+
     function buildMarkers() {
       markerGroup.clear();
       while (hudContainer.firstChild) hudContainer.removeChild(hudContainer.firstChild);
@@ -308,7 +395,12 @@ export const LunarOrbitalGlobe: React.FC<Props> = ({ sites, selectedSiteId, onSi
         allSites.push({ id: 'custom', name: 'Custom', category: 'Custom', lat: customLat, lon: customLon, alt_km: 0, max_slope_deg: 0, psr_distance_km: 0, description: '', horizon_profile_deg: [] } as unknown as SiteData);
       }
       for (const s of allSites) {
-        const col = s.id === selectedSiteId ? 0x10b981 : (s.id === 'apollo-11' ? 0x06b6d4 : (s.max_slope_deg > 15 ? 0xef4444 : 0xf59e0b));
+        const isSelected = s.id === selectedSiteId;
+        const pinnedStyle = pinnedStyleBySiteId.get(s.id);
+        const isPinned = !isSelected && Boolean(pinnedStyle);
+        const col = isSelected
+          ? 0x10b981
+          : (pinnedStyle?.haloHex ?? (s.id === 'apollo-11' ? 0x06b6d4 : (s.max_slope_deg > 15 ? 0xef4444 : 0xf59e0b)));
         // create elevated beacon: cylinder + sphere + pulsing ring (simple scaling animation)
         const pin = new THREE.Group();
         const cylGeom = new THREE.CylinderGeometry(0.01, 0.01, 0.25, 6);
@@ -336,24 +428,80 @@ export const LunarOrbitalGlobe: React.FC<Props> = ({ sites, selectedSiteId, onSi
         surfaceRing.rotation.x = Math.PI / 2;
         surfaceRing.position.set(0, 0.01, 0);
         surfaceRing.renderOrder = 999;
+        surfaceRing.userData.baseOpacity = isPinned ? 0.45 : 0.32;
+        surfaceRing.userData.opacityAmplitude = isPinned ? 0.28 : 0.18;
+        surfaceRing.userData.scaleAmplitude = isPinned ? 0.2 : 0.12;
+        surfaceRing.userData.pulseSpeed = isPinned ? 2.5 : 2;
         pin.add(surfaceRing);
 
-        // 2D HUD label for this site
-        const label = document.createElement('div');
-        label.innerText = s.name.split(' ').slice(0, 2).join(' ');
-        label.style.position = 'absolute';
-        label.style.pointerEvents = 'auto';
-        label.style.padding = '4px 6px';
-        label.style.background = '#090D16';
-        label.style.border = '1px solid #1E293B';
-        label.style.color = '#E2E8F0';
-        label.style.fontSize = '12px';
-        label.style.borderRadius = '6px';
-        label.style.transform = 'translate(-50%, -140%)';
-        label.style.cursor = 'pointer';
-        label.onclick = () => onSiteSelect(s.id);
-        hudContainer.appendChild(label);
-        (pin as any).hudLabel = label;
+        if (isPinned && pinnedStyle) {
+          const haloRing = new THREE.Mesh(
+            new THREE.RingGeometry(0.13, 0.24, 40),
+            new THREE.MeshBasicMaterial({
+              color: pinnedStyle.haloHex,
+              transparent: true,
+              opacity: 0.22,
+              side: THREE.DoubleSide,
+              depthWrite: false,
+              blending: THREE.AdditiveBlending,
+            }),
+          );
+          haloRing.rotation.x = Math.PI / 2;
+          haloRing.position.set(0, 0.012, 0);
+          haloRing.renderOrder = 1000;
+          haloRing.userData.baseOpacity = 0.18;
+          haloRing.userData.opacityAmplitude = 0.3;
+          haloRing.userData.scaleAmplitude = 0.22;
+          haloRing.userData.pulseSpeed = 1.6;
+          haloRing.userData.pulsePhase = 0.7;
+          pin.add(haloRing);
+
+          const haloRingOuter = new THREE.Mesh(
+            new THREE.RingGeometry(0.25, 0.35, 40),
+            new THREE.MeshBasicMaterial({
+              color: pinnedStyle.haloHex,
+              transparent: true,
+              opacity: 0.12,
+              side: THREE.DoubleSide,
+              depthWrite: false,
+              blending: THREE.AdditiveBlending,
+            }),
+          );
+          haloRingOuter.rotation.x = Math.PI / 2;
+          haloRingOuter.position.set(0, 0.013, 0);
+          haloRingOuter.renderOrder = 1001;
+          haloRingOuter.userData.baseOpacity = 0.1;
+          haloRingOuter.userData.opacityAmplitude = 0.2;
+          haloRingOuter.userData.scaleAmplitude = 0.15;
+          haloRingOuter.userData.pulseSpeed = 1.2;
+          haloRingOuter.userData.pulsePhase = 1.3;
+          pin.add(haloRingOuter);
+        }
+
+        const shouldShowLabel = isSelected || isPinned;
+        if (shouldShowLabel) {
+          const label = document.createElement('div');
+          label.innerText = isPinned ? `PINNED: ${s.name}` : `ACTIVE: ${s.name}`;
+          label.style.position = 'absolute';
+          label.style.pointerEvents = 'auto';
+          label.style.padding = '4px 10px';
+          label.style.background = isPinned ? pinnedStyle!.labelBackground : '#043024';
+          label.style.border = `1px solid ${isPinned ? pinnedStyle!.labelBorder : '#10B981AA'}`;
+          label.style.color = isPinned ? pinnedStyle!.labelText : '#A7F3D0';
+          label.style.fontSize = '11px';
+          label.style.fontFamily = 'JetBrains Mono, monospace';
+          label.style.letterSpacing = '0.02em';
+          label.style.borderRadius = '999px';
+          label.style.whiteSpace = 'nowrap';
+          label.style.transform = 'translate(-50%, -150%)';
+          label.style.boxShadow = isPinned
+            ? `0 0 16px ${pinnedStyle!.haloCss}55`
+            : '0 0 12px #10B98155';
+          label.style.cursor = 'pointer';
+          label.onclick = () => handleMarkerInteraction(s.id);
+          hudContainer.appendChild(label);
+          (pin as any).hudLabel = label;
+        }
       }
     }
 
@@ -361,15 +509,26 @@ export const LunarOrbitalGlobe: React.FC<Props> = ({ sites, selectedSiteId, onSi
 
     // Raycaster for clicks
     const raycaster = new THREE.Raycaster();
+
+    function resolveSiteId(object: THREE.Object3D | null): string | null {
+      let current: THREE.Object3D | null = object;
+      while (current) {
+        const candidate = (current as any).siteId;
+        if (typeof candidate === 'string') return candidate;
+        current = current.parent;
+      }
+      return null;
+    }
+
     function onClick(ev: MouseEvent) {
       const rect = renderer.domElement.getBoundingClientRect();
       const x = ((ev.clientX - rect.left) / rect.width) * 2 - 1;
       const y = -((ev.clientY - rect.top) / rect.height) * 2 + 1;
       raycaster.setFromCamera(new THREE.Vector2(x, y), camera);
-      const hits = raycaster.intersectObjects(markerGroup.children as any);
+      const hits = raycaster.intersectObjects(markerGroup.children as any, true);
       if (hits.length > 0) {
-        const obj = hits[0].object as any;
-        if (obj.siteId) onSiteSelect(obj.siteId);
+        const siteId = resolveSiteId(hits[0].object);
+        if (siteId) handleMarkerInteraction(siteId);
       }
     }
     renderer.domElement.addEventListener('click', onClick);
@@ -460,7 +619,7 @@ export const LunarOrbitalGlobe: React.FC<Props> = ({ sites, selectedSiteId, onSi
           }
         }
        // simple auto-rotation when not interacting (blend with preset)
-       if (!isDragging) {
+       if (!isDragging && !isCameraTransitioning) {
          azimuth += 0.0006;
        }
        updateCamera();
@@ -475,12 +634,24 @@ export const LunarOrbitalGlobe: React.FC<Props> = ({ sites, selectedSiteId, onSi
            top.scale.setScalar(s);
          }
          // pulse surface ring (child at end)
-         const ring = g.children.find((ch) => (ch as THREE.Mesh).geometry && (ch as THREE.Mesh).geometry.type === 'RingGeometry') as THREE.Mesh | undefined;
-         if (ring) {
-           const scale = 1 + 0.12 * Math.abs(Math.sin(t * 2 + idx));
-           ring.scale.set(scale, scale, scale);
-           (ring.material as THREE.Material).opacity = 0.35 + 0.2 * Math.abs(Math.sin(t * 2 + idx));
-         }
+          g.children.forEach((child, ringIdx) => {
+            const ring = child as THREE.Mesh;
+            const geometry = (ring as any).geometry as THREE.BufferGeometry | undefined;
+            if (!geometry || geometry.type !== 'RingGeometry') return;
+
+            const pulseSpeed = typeof ring.userData.pulseSpeed === 'number' ? ring.userData.pulseSpeed : 2;
+            const pulsePhase = typeof ring.userData.pulsePhase === 'number' ? ring.userData.pulsePhase : 0;
+            const scaleAmplitude = typeof ring.userData.scaleAmplitude === 'number' ? ring.userData.scaleAmplitude : 0.12;
+            const baseOpacity = typeof ring.userData.baseOpacity === 'number' ? ring.userData.baseOpacity : 0.32;
+            const opacityAmplitude = typeof ring.userData.opacityAmplitude === 'number' ? ring.userData.opacityAmplitude : 0.2;
+
+            const pulse = Math.abs(Math.sin(t * pulseSpeed + idx + ringIdx * 0.35 + pulsePhase));
+            const scale = 1 + scaleAmplitude * pulse;
+            ring.scale.set(scale, scale, scale);
+
+            const material = ring.material as THREE.Material;
+            material.opacity = Math.min(0.95, baseOpacity + opacityAmplitude * pulse);
+          });
 
          // update HUD label projection
          try {
@@ -548,11 +719,16 @@ export const LunarOrbitalGlobe: React.FC<Props> = ({ sites, selectedSiteId, onSi
       renderer.dispose();
       try { mount.removeChild(renderer.domElement); } catch {}
       try { mount.removeChild(overlay); } catch {}
+      focusCameraOnSiteRef.current = () => {};
       // Do not dispose cached textures (they are kept for instant reuse). Dispose only materials we created here.
       try { sphereMat.dispose(); } catch {}
       try { rimMat.dispose(); } catch {}
     };
-  }, [sites, selectedSiteId, onSiteSelect, customLat, customLon, timelineIdx, telemetryPoints]);
+  }, [sites, selectedSiteId, comparedSiteIds, onSiteSelect, onPinnedSiteFocus, customLat, customLon, timelineIdx, telemetryPoints]);
+
+  useEffect(() => {
+    focusCameraOnSiteRef.current(focusedSite ?? null);
+  }, [focusedSite]);
 
   // Fallback SVG rendering when WebGL is not available (jsdom / headless)
   // Safe WebGL detection for fallback rendering (avoid calling getContext in jsdom)
@@ -599,11 +775,50 @@ export const LunarOrbitalGlobe: React.FC<Props> = ({ sites, selectedSiteId, onSi
             <circle cx={centerX} cy={centerY} r={radius} fill="url(#moonGrad)" stroke="#1E293B" />
             {sites.map((s) => {
               const p = project(s.lat, s.lon);
-              const color = s.id === selectedSiteId ? '#10B981' : (s.id === 'apollo-11' ? '#06B6D4' : (s.max_slope_deg > 15 ? '#EF4444' : '#F59E0B'));
+              const pinnedIdx = comparedSiteIds.findIndex((id) => id === s.id);
+              const pinnedStyle = pinnedIdx >= 0 && s.id !== selectedSiteId ? PINNED_SITE_STYLES[pinnedIdx] : undefined;
+              const isPinned = Boolean(pinnedStyle);
+              const isSelected = s.id === selectedSiteId;
+              const color = isSelected
+                ? '#10B981'
+                : (pinnedStyle?.haloCss ?? (s.id === 'apollo-11' ? '#06B6D4' : (s.max_slope_deg > 15 ? '#EF4444' : '#F59E0B')));
+
+              const labelText = isSelected
+                ? `ACTIVE: ${s.name}`
+                : (isPinned ? `PINNED: ${s.name}` : '');
+              const labelWidth = Math.max(120, labelText.length * 7.1 + 14);
+
               return (
-                <g key={s.id} onClick={() => onSiteSelect(s.id)} style={{ cursor: 'pointer' }}>
+                <g key={s.id} onClick={() => handleSiteInteraction(s.id, isPinned)} style={{ cursor: 'pointer' }}>
+                  {isPinned && pinnedStyle && (
+                    <>
+                      <circle cx={p.x} cy={p.y} r={11} fill="none" stroke={pinnedStyle.haloCss} strokeOpacity={0.8} strokeWidth={2} />
+                      <circle cx={p.x} cy={p.y} r={15} fill="none" stroke={pinnedStyle.haloCss} strokeOpacity={0.4} strokeWidth={2} />
+                    </>
+                  )}
                   <circle cx={p.x} cy={p.y} r={6} fill={color} stroke="#000" />
-                  <text x={p.x + 8} y={p.y + 4} fontSize={10} fill="#F8FAFC">{s.name.split(' ').slice(0,2).join(' ')}</text>
+                  {(isSelected || isPinned) && (
+                    <g transform={`translate(${p.x - labelWidth / 2}, ${p.y - 26})`}>
+                      <rect
+                        width={labelWidth}
+                        height={16}
+                        rx={8}
+                        ry={8}
+                        fill={isPinned ? pinnedStyle!.labelBackground : '#043024'}
+                        stroke={isPinned ? pinnedStyle!.labelBorder : '#10B981AA'}
+                      />
+                      <text
+                        x={labelWidth / 2}
+                        y={11}
+                        textAnchor="middle"
+                        fontSize={9.5}
+                        style={{ fontFamily: 'JetBrains Mono, monospace' }}
+                        fill={isPinned ? pinnedStyle!.labelText : '#A7F3D0'}
+                      >
+                        {labelText}
+                      </text>
+                    </g>
+                  )}
                 </g>
               );
             })}
