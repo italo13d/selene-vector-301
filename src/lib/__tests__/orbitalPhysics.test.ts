@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { getSiteTelemetry, getCustomCoordTelemetry, getAllSites } from '../../lib/orbitalPhysics';
 import sitesData from '../../data/sites.json';
 import { computeBatteryTrajectory } from '../../lib/orbitalPhysics';
+import { runAHPTOPSIS } from '../../lib/ahpTopsis';
 
 describe('Orbital physics invariants', () => {
   it('Shackleton rim (+0d) should be sunlit: high solar and moderate DTE uptime', () => {
@@ -61,6 +62,44 @@ describe('Orbital physics invariants', () => {
     }
     // Ensure we found at least one eclipsed-case to validate
     expect(found).toBeTruthy();
+  });
+
+  it('REQ-SCI-05: south-pole sites without dedicated ephemeris inherit Shackleton Sun/Earth vectors while preserving local horizons', () => {
+    const shackleton = getSiteTelemetry('shackleton-rim', '+0d');
+    const fallbackIds = ['connecting-ridge', 'faustini-rim-a'] as const;
+
+    for (const id of fallbackIds) {
+      const telemetry = getSiteTelemetry(id, '+0d');
+      const siteDef = (sitesData as any[]).find((s) => s.id === id);
+
+      expect(telemetry.source).toContain('proxy: shackleton-rim');
+      expect(telemetry.points.length).toBe(shackleton.points.length);
+      expect(telemetry.site.horizon_profile_deg).toEqual(siteDef.horizon_profile_deg);
+
+      for (let i = 0; i < telemetry.points.length; i++) {
+        expect(telemetry.points[i].sun_az).toBe(shackleton.points[i].sun_az);
+        expect(telemetry.points[i].sun_el).toBe(shackleton.points[i].sun_el);
+        expect(telemetry.points[i].earth_az).toBe(shackleton.points[i].earth_az);
+        expect(telemetry.points[i].earth_el).toBe(shackleton.points[i].earth_el);
+      }
+    }
+  });
+
+  it('REQ-SCI-05 / REQ-UX-02: proxy telemetry keeps CSA slope-veto behavior (>15 deg)', () => {
+    const faustini = getSiteTelemetry('faustini-rim-a', '+0d');
+    const connecting = getSiteTelemetry('connecting-ridge', '+0d');
+
+    expect(faustini.site.max_slope_deg).toBeGreaterThan(15);
+    expect(connecting.site.max_slope_deg).toBeLessThanOrEqual(15);
+
+    const rankings = runAHPTOPSIS('+0d');
+    const faustiniRank = rankings.find((r) => r.site.id === 'faustini-rim-a');
+    const connectingRank = rankings.find((r) => r.site.id === 'connecting-ridge');
+
+    expect(faustiniRank).toBeTruthy();
+    expect(faustiniRank?.slope_veto).toBe(true);
+    expect(connectingRank).toBeTruthy();
+    expect(connectingRank?.slope_veto).toBe(false);
   });
 
   it('REQ-CSA-02: battery trajectory drops below 20% after >24h continuous eclipse', () => {

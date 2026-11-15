@@ -11,7 +11,8 @@ export function latLonToCartesian(latDeg: number, lonDeg: number, radius: number
   const lon = degreesToRadians(lonDeg);
   const cosLat = Math.cos(lat);
   const x = radius * cosLat * Math.cos(lon);
-  const z = radius * cosLat * Math.sin(lon);
+  // Negative Z keeps longitude orientation aligned with THREE.SphereGeometry UVs.
+  const z = -radius * cosLat * Math.sin(lon);
   const y = radius * Math.sin(lat);
   return { x, y, z };
 }

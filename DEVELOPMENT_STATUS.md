@@ -7,7 +7,7 @@ Projeto: Selene Vector 301
 
 - Branch atual: `main`
 - Ultima verificacao local: `npm test && npm run build` concluido com sucesso (exit 0)
-- Observacao: os testes em `jsdom` ainda exibem logs de `HTMLCanvasElement.getContext` (nao implementado), mas a suite passa.
+- Observacao: ruido de `HTMLCanvasElement.getContext` em `jsdom` foi removido via mock global; fallback SVG continua coberto nos testes de UI.
 
 ## 2) O que ja esta implementado
 
@@ -37,9 +37,13 @@ Projeto: Selene Vector 301
   - `AmbientLight('#1E293B', 0.28)`
   - `HemisphereLight('#334155', '#0F172A', 0.35)`
   - textura externa `/textures/moon_1024.jpg` via `THREE.TextureLoader` singleton cacheado em modulo
-  - fallback procedural mantido (CanvasTexture)
+  - textura externa com `THREE.SRGBColorSpace`, reaproveitada como `map` e `bumpMap` (`bumpScale: 0.055`)
+  - fallback procedural mantido (CanvasTexture) quando textura externa nao estiver disponivel
   - fallback SVG para ambiente sem WebGL preservado (importante para testes)
   - material ajustado: `bumpScale: 0.055`, `roughness: 0.92`, `metalness: 0.02`
+- `src/lib/lunarGlobeMath.ts`
+  - alinhamento longitudinal de `latLonToCartesian` ajustado para casar com UV de `THREE.SphereGeometry`
+  - validado com Apollo 11 (Mare Tranquillitatis) e polos Artemis no eixo `-Y`
 
 ### Dados e fisica orbital
 
@@ -64,30 +68,35 @@ Projeto: Selene Vector 301
 ### Testes
 
 - `src/lib/__tests__/lunarGlobeMath.test.ts`
+  - `REQ-VIS-02`: validacao de alinhamento UV/longitude (Apollo 11) com `SphereGeometry`
   - validacao de `computeBodyFixedDirection`:
     - `el=90` coincide com vetor zenith local `U`
     - `el=0` ortogonal a `U`
   - validacao de carga de 10 sites
+- `src/lib/__tests__/orbitalPhysics.test.ts`
+  - `REQ-SCI-05`: `connecting-ridge` e `faustini-rim-a` herdam vetores Sun/Earth de `shackleton-rim`
+  - preservacao de `horizon_profile_deg` proprio por site durante fallback de efemeride
+  - `REQ-UX-02`: validacao explicita de veto CSA para `faustini-rim-a` (`max_slope_deg > 15`)
 
 ## 3) Validacao executada hoje
 
 Comando executado:
 
 ```bash
-npm test --silent && npm run build --silent
+npm test && npm run build
 ```
 
 Resultado:
 
-- Testes: `5 files`, `26 tests`, todos passando
+- Testes: `5 files`, `29 tests`, todos passando
 - Build: sucesso, bundle gerado em `dist/`
 - Aviso de performance conhecido: chunk JS principal > 500 kB (apenas warning)
 
 ## 4) Pontos de atencao para amanha
 
-1. Reduzir ruido de logs em testes `jsdom` (`getContext` not implemented), sem quebrar fallback SVG.
-2. Opcional: quebrar bundle para reduzir warning de chunk grande (code-splitting/manualChunks).
-3. Opcional: ampliar cobertura com teste especifico para fallback de efemeride de sites sul sem chave dedicada.
+1. ✅ Concluido: remover ruido `HTMLCanvasElement.getContext` em `jsdom` sem quebrar fallback SVG.
+2. ✅ Concluido: cobertura especifica para fallback de efemeride de sites sul sem chave dedicada.
+3. Opcional: quebrar bundle para reduzir warning de chunk grande (code-splitting/manualChunks).
 
 ## 5) Como retomar rapido amanha
 

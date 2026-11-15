@@ -23,6 +23,26 @@ describe('lunarGlobeMath', () => {
     expect(v.y).toBeCloseTo(0, 6);
   });
 
+  it('REQ-VIS-02: Apollo 11 lat/lon aligns with THREE.SphereGeometry UV longitude mapping', () => {
+    const apolloLat = 0.674;
+    const apolloLon = 23.473;
+    const radius = 2;
+    const v = latLonToCartesian(apolloLat, apolloLon, radius);
+
+    // Inverse of SphereGeometry parameterization: phi from x/z, theta from y.
+    let phi = Math.atan2(v.z, -v.x);
+    if (phi < 0) phi += Math.PI * 2;
+    const theta = Math.acos(Math.max(-1, Math.min(1, v.y / radius)));
+    const u = phi / (Math.PI * 2);
+    const vTex = theta / Math.PI;
+
+    const expectedU = (apolloLon + 180) / 360;
+    const expectedV = (90 - apolloLat) / 180;
+
+    expect(u).toBeCloseTo(expectedU, 5);
+    expect(vTex).toBeCloseTo(expectedV, 5);
+  });
+
   it('REQ-VIS-03: shouldStepCameraTransition cancels on user interaction and close target distance', () => {
     // user interacting -> no transition
     expect(shouldStepCameraTransition(true, 6.0, 6.2)).toBe(false);

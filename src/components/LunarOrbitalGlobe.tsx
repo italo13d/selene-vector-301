@@ -4,6 +4,80 @@ import type { SiteData } from '../lib/orbitalPhysics';
 import * as THREE from 'three';
 // Note: avoid direct typed import of three/examples jsm modules to keep build simple
 
+type MoonTextureRuntimeCache = {
+  loader?: THREE.TextureLoader;
+  texture: THREE.Texture | null;
+  loadPromise: Promise<THREE.Texture | null> | null;
+};
+
+function markTextureAsSrgb(texture: THREE.Texture) {
+  try {
+    (texture as any).colorSpace = (THREE as any).SRGBColorSpace ?? THREE.SRGBColorSpace;
+  } catch {
+    // ignore color-space assignment failures in restricted test environments
+  }
+  texture.needsUpdate = true;
+}
+
+function getMoonTextureRuntimeCache(): MoonTextureRuntimeCache {
+  const root = globalThis as any;
+  if (!root.__selene_moon_texture_runtime_cache) {
+    let loader: THREE.TextureLoader | undefined;
+    try {
+      loader = new THREE.TextureLoader();
+    } catch {
+      loader = undefined;
+    }
+    root.__selene_moon_texture_runtime_cache = {
+      loader,
+      texture: null,
+      loadPromise: null,
+    } as MoonTextureRuntimeCache;
+  }
+  return root.__selene_moon_texture_runtime_cache as MoonTextureRuntimeCache;
+}
+
+function getLoadedMoonTexture(): THREE.Texture | null {
+  return getMoonTextureRuntimeCache().texture;
+}
+
+function ensureMoonTextureLoad(): Promise<THREE.Texture | null> {
+  const cache = getMoonTextureRuntimeCache();
+  if (cache.texture) {
+    return Promise.resolve(cache.texture);
+  }
+  if (cache.loadPromise) {
+    return cache.loadPromise;
+  }
+  if (!cache.loader) {
+    return Promise.resolve(null);
+  }
+
+  cache.loadPromise = new Promise((resolve) => {
+    try {
+      const pendingTexture = cache.loader!.load(
+        '/textures/moon_1024.jpg',
+        (loadedTexture) => {
+          markTextureAsSrgb(loadedTexture);
+          cache.texture = loadedTexture;
+          resolve(loadedTexture);
+        },
+        undefined,
+        () => {
+          cache.loadPromise = null;
+          resolve(null);
+        },
+      );
+      markTextureAsSrgb(pendingTexture);
+    } catch {
+      cache.loadPromise = null;
+      resolve(null);
+    }
+  });
+
+  return cache.loadPromise;
+}
+
 interface Props {
   sites: SiteData[];
   selectedSiteId: string;
@@ -16,15 +90,6 @@ interface Props {
 
 export const LunarOrbitalGlobe: React.FC<Props> = ({ sites, selectedSiteId, onSiteSelect, customLat, customLon, timelineIdx = 0, telemetryPoints = [] }) => {
   const mountRef = useRef<HTMLDivElement | null>(null);
-  // Module-level cached THREE.TextureLoader singleton (shared across hot-reloads)
-  const sharedLoader = (globalThis as any).__selene_moon_texture_loader as THREE.TextureLoader | undefined;
-  if (!sharedLoader) {
-    try {
-      (globalThis as any).__selene_moon_texture_loader = new THREE.TextureLoader();
-    } catch (e) {
-      // ignore loader creation failures in restricted/test environments
-    }
-  }
   // expose preset setter to header buttons outside the renderer effect
   const setCameraPresetRef = useRef<(p: 'south' | 'global') => void>(() => {});
 
@@ -65,6 +130,7 @@ export const LunarOrbitalGlobe: React.FC<Props> = ({ sites, selectedSiteId, onSi
     // initial camera matches South Pole Focus per requirement
     camera.position.set(0, -4.6, 3.8);
     camera.lookAt(0, -0.35, 0);
+    let mounted = true;
 
     // Simple pointer-based orbit controls (no external dependency)
     let isDragging = false;
@@ -135,51 +201,53 @@ export const LunarOrbitalGlobe: React.FC<Props> = ({ sites, selectedSiteId, onSi
     renderer.domElement.addEventListener('wheel', onWheel, { passive: true });
 
     // Use deterministic cached lunar textures (1024x512 equirectangular) so switching sites is instant
-    let albedo: THREE.Texture | undefined;
-    let bump: THREE.CanvasTexture | undefined;
+    let proceduralAlbedo: THREE.Texture | undefined;
+    let proceduralBump: THREE.Texture | undefined;
     try {
       const canvases = createOrGetLunarTextureCanvases(1337, 1024, 512);
       // if three.js textures were created previously, reuse them
       if ((lunarTextureCache as any).threeAlbedo && (lunarTextureCache as any).threeBump) {
-        albedo = (lunarTextureCache as any).threeAlbedo as THREE.Texture;
-        bump = (lunarTextureCache as any).threeBump as THREE.CanvasTexture;
+        proceduralAlbedo = (lunarTextureCache as any).threeAlbedo as THREE.Texture;
+        proceduralBump = (lunarTextureCache as any).threeBump as THREE.Texture;
       } else {
         const canvTex = new THREE.CanvasTexture(canvases.albedo as HTMLCanvasElement);
         const canvBump = new THREE.CanvasTexture(canvases.bump as HTMLCanvasElement);
-        try { (canvTex as any).colorSpace = (THREE as any).SRGBColorSpace ?? THREE.SRGBColorSpace; } catch {}
-        canvTex.needsUpdate = true;
-        albedo = canvTex;
-        bump = canvBump;
-        (lunarTextureCache as any).threeAlbedo = albedo;
-        (lunarTextureCache as any).threeBump = bump;
+        markTextureAsSrgb(canvTex);
+        canvBump.needsUpdate = true;
+        proceduralAlbedo = canvTex;
+        proceduralBump = canvBump;
+        (lunarTextureCache as any).threeAlbedo = proceduralAlbedo;
+        (lunarTextureCache as any).threeBump = proceduralBump;
       }
-    } catch (e) {
-      albedo = undefined;
-      bump = undefined;
+    } catch {
+      proceduralAlbedo = undefined;
+      proceduralBump = undefined;
     }
 
-    // Try to load a higher-fidelity NASA texture if available; fallback to procedural canvas
-    let externalAlbedo: THREE.Texture | undefined;
-    try {
-      const loader = (globalThis as any).__selene_moon_texture_loader as THREE.TextureLoader | undefined;
-      if (loader) {
-        // load returns a Texture immediately; it will be updated asynchronously when the image loads
-        externalAlbedo = loader.load('/textures/moon_1024.jpg', (tex) => {
-          try { (tex as any).colorSpace = (THREE as any).SRGBColorSpace ?? THREE.SRGBColorSpace; } catch {}
-          tex.needsUpdate = true;
-        }, undefined, () => {
-          // onError: keep externalAlbedo undefined so procedural is used
-          externalAlbedo = undefined;
-        });
-      }
-    } catch (err) {
-      externalAlbedo = undefined;
-    }
+    // Use cached NASA texture when available; keep deterministic procedural fallback for offline/test environments.
+    const cachedMoonTexture = getLoadedMoonTexture();
+    const mapTexture = cachedMoonTexture ?? proceduralAlbedo;
+    const bumpTexture = cachedMoonTexture ?? proceduralBump;
 
     const sphereGeom = new THREE.SphereGeometry(R, 128, 128);
-    const sphereMat = new THREE.MeshStandardMaterial({ map: externalAlbedo || albedo, bumpMap: bump, bumpScale: 0.055, roughness: 0.92, metalness: 0.02 });
+    const sphereMat = new THREE.MeshStandardMaterial({
+      map: mapTexture,
+      bumpMap: bumpTexture,
+      bumpScale: 0.055,
+      roughness: 0.92,
+      metalness: 0.02,
+    });
     const moon = new THREE.Mesh(sphereGeom, sphereMat);
     scene.add(moon);
+
+    if (!cachedMoonTexture) {
+      void ensureMoonTextureLoad().then((loadedTexture) => {
+        if (!mounted || !loadedTexture) return;
+        sphereMat.map = loadedTexture;
+        sphereMat.bumpMap = loadedTexture;
+        sphereMat.needsUpdate = true;
+      });
+    }
 
     // realistic day/night terminator lighting per requirements
     const sun = new THREE.DirectionalLight('#FFF9ED', 3.2);
@@ -369,7 +437,6 @@ export const LunarOrbitalGlobe: React.FC<Props> = ({ sites, selectedSiteId, onSi
     // helper: placeholder earth direction (approximate) - will be animated/updated if telemetry provides better data
     let earthDir = new THREE.Vector3(-0.3, 0.05, 0.95).normalize();
     // animation loop
-    let mounted = true;
     function animate() {
       if (!mounted) return;
       requestAnimationFrame(animate);
