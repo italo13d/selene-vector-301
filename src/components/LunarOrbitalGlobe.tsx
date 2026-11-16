@@ -1,4 +1,4 @@
-import React, { useEffect, useRef } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { latLonToCartesian, createOrGetLunarTextureCanvases, lunarTextureCache, computeBodyFixedDirection } from '../lib/lunarGlobeMath';
 import type { SiteData } from '../lib/orbitalPhysics';
 import * as THREE from 'three';
@@ -35,6 +35,34 @@ const PINNED_SITE_STYLES: readonly PinnedSiteStyle[] = [
   },
 ];
 
+const PRESET_CAMERA_DISTANCE = 8.0;
+const SOUTH_POLE_PRESET = { x: 0, y: -4.6, z: 3.8 } as const;
+const GLOBAL_PRESET = { x: 0, y: 0.8, z: 6.2 } as const;
+const SITE_FOCUS_MIN_DISTANCE = 8.0;
+const MIN_CAMERA_DISTANCE = 4.8;
+const MAX_CAMERA_DISTANCE = 16;
+const CAMERA_TRANSITION_LERP = 0.06;
+const BODY_VECTOR_LERP = 0.14;
+const NOMINAL_FRAME_DT = 1 / 60;
+const SUN_LIGHT_DISTANCE = 12;
+const VECTOR_INDICATOR_LENGTH = 1.9;
+const MIN_DIRECTION_LENGTH_SQ = 1e-6;
+
+type BodyDirectionVector = {
+  x: number;
+  y: number;
+  z: number;
+};
+
+type TelemetryDirectionPoint = {
+  sun_az: number;
+  sun_el: number;
+  earth_az: number;
+  earth_el: number;
+  sun_visible?: boolean;
+  earth_visible?: boolean;
+};
+
 function markTextureAsSrgb(texture: THREE.Texture) {
   try {
     (texture as any).colorSpace = (THREE as any).SRGBColorSpace ?? THREE.SRGBColorSpace;
@@ -42,6 +70,45 @@ function markTextureAsSrgb(texture: THREE.Texture) {
     // ignore color-space assignment failures in restricted test environments
   }
   texture.needsUpdate = true;
+}
+
+function isDirectionValid(vector: THREE.Vector3): boolean {
+  return Number.isFinite(vector.x)
+    && Number.isFinite(vector.y)
+    && Number.isFinite(vector.z)
+    && vector.lengthSq() > MIN_DIRECTION_LENGTH_SQ;
+}
+
+function sanitizeDirection(vector: THREE.Vector3, fallback: THREE.Vector3): THREE.Vector3 {
+  if (!isDirectionValid(vector)) {
+    return vector.copy(fallback);
+  }
+  vector.normalize();
+  return vector;
+}
+
+function scaleVectorToDistance(x: number, y: number, z: number, distance: number): BodyDirectionVector {
+  const magnitude = Math.sqrt(x * x + y * y + z * z) || 1;
+  const scale = distance / magnitude;
+  return {
+    x: x * scale,
+    y: y * scale,
+    z: z * scale,
+  };
+}
+
+function computeBodyDirectionForTelemetry(
+  siteLat: number,
+  siteLon: number,
+  azDeg: number,
+  elDeg: number,
+): BodyDirectionVector | null {
+  try {
+    const direction = computeBodyFixedDirection(siteLat, siteLon, azDeg, elDeg);
+    return { x: direction.x, y: direction.y, z: direction.z };
+  } catch {
+    return null;
+  }
 }
 
 function getMoonTextureRuntimeCache(): MoonTextureRuntimeCache {
@@ -112,8 +179,13 @@ interface Props {
   focusedSite?: SiteData | null;
   customLat?: number;
   customLon?: number;
+  currentStep?: number;
+  sunVisible?: boolean;
+  earthVisible?: boolean;
+  sunDirection?: BodyDirectionVector | null;
+  earthDirection?: BodyDirectionVector | null;
   timelineIdx?: number;
-  telemetryPoints?: any[];
+  telemetryPoints?: TelemetryDirectionPoint[];
 }
 
 export const LunarOrbitalGlobe: React.FC<Props> = ({
@@ -125,6 +197,11 @@ export const LunarOrbitalGlobe: React.FC<Props> = ({
   focusedSite,
   customLat,
   customLon,
+  currentStep,
+  sunVisible,
+  earthVisible,
+  sunDirection,
+  earthDirection,
   timelineIdx = 0,
   telemetryPoints = [],
 }) => {
@@ -132,6 +209,86 @@ export const LunarOrbitalGlobe: React.FC<Props> = ({
   // expose preset setter to header buttons outside the renderer effect
   const setCameraPresetRef = useRef<(p: 'south' | 'global') => void>(() => {});
   const focusCameraOnSiteRef = useRef<(site: SiteData | null) => void>(() => {});
+  const sitesRef = useRef<SiteData[]>(sites);
+  const selectedSiteIdRef = useRef(selectedSiteId);
+  const comparedSiteIdsRef = useRef<string[]>(comparedSiteIds);
+  const customLatRef = useRef<number | undefined>(customLat);
+  const customLonRef = useRef<number | undefined>(customLon);
+  const onSiteSelectRef = useRef(onSiteSelect);
+  const onPinnedSiteFocusRef = useRef(onPinnedSiteFocus);
+  const timelineIdxRef = useRef(0);
+  const telemetryPointsRef = useRef<TelemetryDirectionPoint[]>(telemetryPoints);
+  const sunVisibleRef = useRef(false);
+  const earthVisibleRef = useRef(false);
+  const sunDirectionRef = useRef<BodyDirectionVector | null>(null);
+  const earthDirectionRef = useRef<BodyDirectionVector | null>(null);
+  const [webglUnavailable, setWebglUnavailable] = useState(false);
+
+  const canAttemptWebGL = typeof window !== 'undefined'
+    && (
+      typeof (window as any).WebGLRenderingContext !== 'undefined'
+      || typeof (window as any).WebGL2RenderingContext !== 'undefined'
+    );
+  const shouldUseSvgFallback = webglUnavailable || !canAttemptWebGL;
+
+  const resolvedCurrentStep = Number.isFinite(currentStep ?? timelineIdx)
+    ? Math.max(0, Math.floor(currentStep ?? timelineIdx))
+    : 0;
+  const activeTelemetryPoint = telemetryPoints.length > 0
+    ? telemetryPoints[Math.min(resolvedCurrentStep, telemetryPoints.length - 1)]
+    : undefined;
+  const activeTelemetrySite = sites.find((site) => site.id === selectedSiteId)
+    ?? (typeof customLat === 'number' && typeof customLon === 'number'
+      ? ({ lat: customLat, lon: customLon } as SiteData)
+      : null);
+
+  let resolvedSunDirection = sunDirection ?? null;
+  let resolvedEarthDirection = earthDirection ?? null;
+
+  if (activeTelemetryPoint && activeTelemetrySite) {
+    if (!resolvedSunDirection) {
+      resolvedSunDirection = computeBodyDirectionForTelemetry(
+        activeTelemetrySite.lat,
+        activeTelemetrySite.lon,
+        activeTelemetryPoint.sun_az,
+        activeTelemetryPoint.sun_el,
+      );
+    }
+    if (!resolvedEarthDirection) {
+      resolvedEarthDirection = computeBodyDirectionForTelemetry(
+        activeTelemetrySite.lat,
+        activeTelemetrySite.lon,
+        activeTelemetryPoint.earth_az,
+        activeTelemetryPoint.earth_el,
+      );
+    }
+  }
+
+  const resolvedSunVisible = typeof sunVisible === 'boolean'
+    ? sunVisible
+    : (typeof activeTelemetryPoint?.sun_visible === 'boolean'
+      ? activeTelemetryPoint.sun_visible
+      : false);
+  const resolvedEarthVisible = typeof earthVisible === 'boolean'
+    ? earthVisible
+    : (typeof activeTelemetryPoint?.earth_visible === 'boolean'
+      ? activeTelemetryPoint.earth_visible
+      : false);
+
+  sitesRef.current = sites;
+  selectedSiteIdRef.current = selectedSiteId;
+  comparedSiteIdsRef.current = comparedSiteIds;
+  customLatRef.current = customLat;
+  customLonRef.current = customLon;
+  onSiteSelectRef.current = onSiteSelect;
+  onPinnedSiteFocusRef.current = onPinnedSiteFocus;
+
+  timelineIdxRef.current = resolvedCurrentStep;
+  telemetryPointsRef.current = telemetryPoints;
+  sunVisibleRef.current = resolvedSunVisible;
+  earthVisibleRef.current = resolvedEarthVisible;
+  sunDirectionRef.current = resolvedSunDirection;
+  earthDirectionRef.current = resolvedEarthDirection;
 
   const handleSiteInteraction = (siteId: string, isPinned: boolean) => {
     if (isPinned) {
@@ -145,28 +302,22 @@ export const LunarOrbitalGlobe: React.FC<Props> = ({
     const mount = mountRef.current;
     if (!mount) return;
 
-    // Safe WebGL detection (wrap getContext in try/catch to avoid jsdom errors)
-    function safeHasWebGL(): boolean {
-      try {
-        const testCanvas = document.createElement('canvas');
-        const gl = testCanvas.getContext && (testCanvas.getContext('webgl') || testCanvas.getContext('experimental-webgl'));
-        return !!gl;
-      } catch (e) {
-        return false;
-      }
-    }
-
-    const hasWebGL = safeHasWebGL();
-    if (!hasWebGL) {
-      // No WebGL: fallback handled by JSX below
+    if (shouldUseSvgFallback) {
       return;
     }
 
-    const width = mount!.clientWidth || 480;
-    const height = Math.max(320, mount!.clientHeight || 320);
+    const initialWidth = Math.max(1, Math.round(mount.clientWidth || 480));
+    const initialHeight = Math.max(320, Math.round(mount.clientHeight || 320));
 
-    const renderer = new THREE.WebGLRenderer({ antialias: true });
-    renderer.setSize(width, height);
+    let renderer: THREE.WebGLRenderer;
+    try {
+      renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
+    } catch {
+      setWebglUnavailable(true);
+      return;
+    }
+
+    renderer.setSize(initialWidth, initialHeight);
     renderer.setPixelRatio(window.devicePixelRatio || 1);
     mount.appendChild(renderer.domElement);
 
@@ -174,19 +325,38 @@ export const LunarOrbitalGlobe: React.FC<Props> = ({
     const scene = new THREE.Scene();
     // dark space background for contrast
     scene.background = new THREE.Color('#060911');
-    const camera = new THREE.PerspectiveCamera(45, width / height, 0.1, 1000);
-    // initial camera matches South Pole Focus per requirement
-    camera.position.set(0, -4.6, 3.8);
-    camera.lookAt(0, -0.35, 0);
+    const camera = new THREE.PerspectiveCamera(45, initialWidth / initialHeight, 0.1, 1000);
+    let lastAppliedWidth = initialWidth;
+    let lastAppliedHeight = initialHeight;
+
+    const initialSouthCameraPosition = scaleVectorToDistance(
+      SOUTH_POLE_PRESET.x,
+      SOUTH_POLE_PRESET.y,
+      SOUTH_POLE_PRESET.z,
+      PRESET_CAMERA_DISTANCE,
+    );
+    const initialSouthX = initialSouthCameraPosition.x;
+    const initialSouthY = initialSouthCameraPosition.y;
+    const initialSouthZ = initialSouthCameraPosition.z;
+    const initialSouthDistance = Math.sqrt(
+      initialSouthX * initialSouthX
+      + initialSouthY * initialSouthY
+      + initialSouthZ * initialSouthZ,
+    ) || 1;
+
+    camera.position.set(initialSouthX, initialSouthY, initialSouthZ);
+    camera.lookAt(0, 0, 0);
     let mounted = true;
+    let rafId = 0;
+    let isDisposed = false;
 
     // Simple pointer-based orbit controls (no external dependency)
     let isDragging = false;
     let previousMousePosition = { x: 0, y: 0 };
-    let azimuth = 0;
-    let polar = 0.5; // tilt
-    const distance = { value: 3.5 };
-    let isCameraTransitioning = true;
+    let azimuth = Math.atan2(initialSouthX, initialSouthZ);
+    let polar = Math.asin(initialSouthY / initialSouthDistance);
+    const distance = { value: initialSouthDistance };
+    let isCameraTransitioning = false;
     // spherical target for presets
     const cameraTarget = { az: azimuth, pol: polar, dist: distance.value };
 
@@ -200,22 +370,26 @@ export const LunarOrbitalGlobe: React.FC<Props> = ({
     }
     updateCamera();
 
+    function applyCameraTargetFromCartesian(tx: number, ty: number, tz: number) {
+      const r = Math.sqrt(tx * tx + ty * ty + tz * tz) || 1;
+      cameraTarget.az = Math.atan2(tx, tz);
+      cameraTarget.pol = Math.asin(ty / r);
+      cameraTarget.dist = r;
+    }
+
     function setCameraPreset(preset: 'south' | 'global') {
-      if (preset === 'south') {
-        // South Pole Focus target cartesian
-        const tx = 0, ty = -4.6, tz = 3.8;
-        const r = Math.sqrt(tx * tx + ty * ty + tz * tz);
-        cameraTarget.az = Math.atan2(tx, tz);
-        cameraTarget.pol = Math.asin(ty / r);
-        cameraTarget.dist = r;
-      } else {
-        // Global View [0,0.8,6.2]
-        const tx = 0, ty = 0.8, tz = 6.2;
-        const r = Math.sqrt(tx * tx + ty * ty + tz * tz);
-        cameraTarget.az = Math.atan2(tx, tz);
-        cameraTarget.pol = Math.asin(ty / r);
-        cameraTarget.dist = r;
-      }
+      const presetVector = preset === 'south' ? SOUTH_POLE_PRESET : GLOBAL_PRESET;
+      const presetCameraPosition = scaleVectorToDistance(
+        presetVector.x,
+        presetVector.y,
+        presetVector.z,
+        PRESET_CAMERA_DISTANCE,
+      );
+      applyCameraTargetFromCartesian(
+        presetCameraPosition.x,
+        presetCameraPosition.y,
+        presetCameraPosition.z,
+      );
       isCameraTransitioning = true;
     }
 
@@ -234,7 +408,7 @@ export const LunarOrbitalGlobe: React.FC<Props> = ({
         -Math.PI / 2 + 0.1,
         Math.min(Math.PI / 2 - 0.1, Math.asin(siteVector.y / siteRadius)),
       );
-      cameraTarget.dist = Math.max(2.2, Math.min(12, distance.value));
+      cameraTarget.dist = Math.max(SITE_FOCUS_MIN_DISTANCE, Math.min(MAX_CAMERA_DISTANCE, distance.value));
       isCameraTransitioning = true;
     }
 
@@ -265,7 +439,7 @@ export const LunarOrbitalGlobe: React.FC<Props> = ({
     }
     function onPointerUp() { isDragging = false; }
     function onWheel(e: WheelEvent) {
-      distance.value = Math.max(1.8, Math.min(12, distance.value + e.deltaY * 0.01));
+      distance.value = Math.max(MIN_CAMERA_DISTANCE, Math.min(MAX_CAMERA_DISTANCE, distance.value + e.deltaY * 0.01));
       // cancel preset transition on zoom
       isCameraTransitioning = false;
       updateCamera();
@@ -311,8 +485,11 @@ export const LunarOrbitalGlobe: React.FC<Props> = ({
       bumpScale: 0.055,
       roughness: 0.92,
       metalness: 0.02,
+      emissive: '#1e293b',
+      emissiveIntensity: 0.2,
     });
     const moon = new THREE.Mesh(sphereGeom, sphereMat);
+    moon.frustumCulled = false;
     scene.add(moon);
 
     if (!cachedMoonTexture) {
@@ -376,28 +553,73 @@ export const LunarOrbitalGlobe: React.FC<Props> = ({
     overlay.appendChild(hudContainer);
 
     const pinnedStyleBySiteId = new Map<string, PinnedSiteStyle>();
-    comparedSiteIds.forEach((siteId, idx) => {
-      const style = PINNED_SITE_STYLES[idx];
-      if (!style || siteId === selectedSiteId) return;
-      pinnedStyleBySiteId.set(siteId, style);
-    });
+    const pinnedSiteIds = new Set<string>();
+    let markerSitesSnapshot = sitesRef.current;
+    let markerSelectedSiteIdSnapshot = selectedSiteIdRef.current;
+    let markerComparedSiteIdsSnapshot = comparedSiteIdsRef.current.slice();
+    let markerCustomLatSnapshot = customLatRef.current;
+    let markerCustomLonSnapshot = customLonRef.current;
+
+    function comparedSiteIdsMatch(left: readonly string[], right: readonly string[]) {
+      if (left.length !== right.length) return false;
+      for (let i = 0; i < left.length; i += 1) {
+        if (left[i] !== right[i]) return false;
+      }
+      return true;
+    }
+
+    function rebuildPinnedStyles(selectedId: string, comparedIds: readonly string[]) {
+      pinnedStyleBySiteId.clear();
+      comparedIds.forEach((siteId, idx) => {
+        const style = PINNED_SITE_STYLES[idx];
+        if (!style || siteId === selectedId) return;
+        pinnedStyleBySiteId.set(siteId, style);
+      });
+    }
 
     const handleMarkerInteraction = (siteId: string) => {
       if (!siteId) return;
-      handleSiteInteraction(siteId, pinnedStyleBySiteId.has(siteId));
+      const isPinned = pinnedSiteIds.has(siteId);
+      if (isPinned) {
+        onPinnedSiteFocusRef.current?.(siteId);
+        return;
+      }
+      onSiteSelectRef.current(siteId);
     };
 
     function buildMarkers() {
       markerGroup.clear();
       while (hudContainer.firstChild) hudContainer.removeChild(hudContainer.firstChild);
-      const allSites = sites.slice();
-      if (customLat !== undefined && customLon !== undefined && !isNaN(customLat) && !isNaN(customLon)) {
-        allSites.push({ id: 'custom', name: 'Custom', category: 'Custom', lat: customLat, lon: customLon, alt_km: 0, max_slope_deg: 0, psr_distance_km: 0, description: '', horizon_profile_deg: [] } as unknown as SiteData);
+      pinnedSiteIds.clear();
+      rebuildPinnedStyles(markerSelectedSiteIdSnapshot, markerComparedSiteIdsSnapshot);
+
+      const allSites = markerSitesSnapshot.slice();
+      if (
+        markerCustomLatSnapshot !== undefined
+        && markerCustomLonSnapshot !== undefined
+        && !Number.isNaN(markerCustomLatSnapshot)
+        && !Number.isNaN(markerCustomLonSnapshot)
+      ) {
+        allSites.push({
+          id: 'custom',
+          name: 'Custom',
+          category: 'Custom',
+          lat: markerCustomLatSnapshot,
+          lon: markerCustomLonSnapshot,
+          alt_km: 0,
+          max_slope_deg: 0,
+          psr_distance_km: 0,
+          description: '',
+          horizon_profile_deg: [],
+        } as unknown as SiteData);
       }
       for (const s of allSites) {
-        const isSelected = s.id === selectedSiteId;
+        const isSelected = s.id === markerSelectedSiteIdSnapshot;
         const pinnedStyle = pinnedStyleBySiteId.get(s.id);
         const isPinned = !isSelected && Boolean(pinnedStyle);
+        if (isPinned) {
+          pinnedSiteIds.add(s.id);
+        }
         const col = isSelected
           ? 0x10b981
           : (pinnedStyle?.haloHex ?? (s.id === 'apollo-11' ? 0x06b6d4 : (s.max_slope_deg > 15 ? 0xef4444 : 0xf59e0b)));
@@ -505,7 +727,31 @@ export const LunarOrbitalGlobe: React.FC<Props> = ({
       }
     }
 
-    buildMarkers();
+    function syncMarkers(force = false) {
+      const nextSites = sitesRef.current;
+      const nextSelectedSiteId = selectedSiteIdRef.current;
+      const nextComparedSiteIds = comparedSiteIdsRef.current;
+      const nextCustomLat = customLatRef.current;
+      const nextCustomLon = customLonRef.current;
+
+      const shouldRebuild = force
+        || markerSitesSnapshot !== nextSites
+        || markerSelectedSiteIdSnapshot !== nextSelectedSiteId
+        || markerCustomLatSnapshot !== nextCustomLat
+        || markerCustomLonSnapshot !== nextCustomLon
+        || !comparedSiteIdsMatch(markerComparedSiteIdsSnapshot, nextComparedSiteIds);
+
+      if (!shouldRebuild) return;
+
+      markerSitesSnapshot = nextSites;
+      markerSelectedSiteIdSnapshot = nextSelectedSiteId;
+      markerComparedSiteIdsSnapshot = nextComparedSiteIds.slice();
+      markerCustomLatSnapshot = nextCustomLat;
+      markerCustomLonSnapshot = nextCustomLon;
+      buildMarkers();
+    }
+
+    syncMarkers(true);
 
     // Raycaster for clicks
     const raycaster = new THREE.Raycaster();
@@ -573,59 +819,190 @@ export const LunarOrbitalGlobe: React.FC<Props> = ({
     const raysGroup = new THREE.Group();
     scene.add(raysGroup);
 
-    // helper: placeholder earth direction (approximate) - will be animated/updated if telemetry provides better data
-    let earthDir = new THREE.Vector3(-0.3, 0.05, 0.95).normalize();
+    const sunRay = new THREE.Line(
+      new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(), new THREE.Vector3()]),
+      new THREE.LineBasicMaterial({ color: 0xF59E0B, linewidth: 2, transparent: true, opacity: 0.95 }),
+    );
+    const earthRay = new THREE.Line(
+      new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(), new THREE.Vector3()]),
+      new THREE.LineBasicMaterial({ color: 0x06B6D4, linewidth: 2, transparent: true, opacity: 0.95 }),
+    );
+
+    const sunIndicator = new THREE.Mesh(
+      new THREE.SphereGeometry(0.05, 12, 12),
+      new THREE.MeshBasicMaterial({ color: 0xF59E0B, transparent: true, opacity: 0.95 }),
+    );
+    const earthIndicator = new THREE.Mesh(
+      new THREE.SphereGeometry(0.05, 12, 12),
+      new THREE.MeshBasicMaterial({ color: 0x06B6D4, transparent: true, opacity: 0.95 }),
+    );
+
+    const sunRayMaterial = sunRay.material as THREE.LineBasicMaterial;
+    const earthRayMaterial = earthRay.material as THREE.LineBasicMaterial;
+    const sunIndicatorMaterial = sunIndicator.material as THREE.MeshBasicMaterial;
+    const earthIndicatorMaterial = earthIndicator.material as THREE.MeshBasicMaterial;
+
+    sunRay.frustumCulled = false;
+    earthRay.frustumCulled = false;
+    sunIndicator.frustumCulled = false;
+    earthIndicator.frustumCulled = false;
+
+    raysGroup.add(sunRay);
+    raysGroup.add(earthRay);
+    raysGroup.add(sunIndicator);
+    raysGroup.add(earthIndicator);
+
+    const fallbackSunDir = new THREE.Vector3(0.5, 0.5, 0.5).normalize();
+    const fallbackEarthDir = new THREE.Vector3(-0.3, 0.05, 0.95).normalize();
+    const lastValidSunDir = fallbackSunDir.clone();
+    const lastValidEarthDir = fallbackEarthDir.clone();
+    const targetSunDir = sanitizeDirection(sun.position.clone(), lastValidSunDir);
+    const smoothedSunDir = targetSunDir.clone();
+    const targetEarthDir = lastValidEarthDir.clone();
+    const smoothedEarthDir = targetEarthDir.clone();
+    const cameraTargetPosition = new THREE.Vector3();
+    const activeSiteWorldPosition = new THREE.Vector3();
+    const sunRayEnd = new THREE.Vector3();
+    const earthRayEnd = new THREE.Vector3();
+
+    function setLinePoints(line: THREE.Line, start: THREE.Vector3, end: THREE.Vector3) {
+      const position = line.geometry.getAttribute('position') as THREE.BufferAttribute;
+      position.setXYZ(0, start.x, start.y, start.z);
+      position.setXYZ(1, end.x, end.y, end.z);
+      position.needsUpdate = true;
+    }
+
+    function applyRendererSize(nextWidth: number, nextHeight: number, force = false) {
+      const roundedWidth = Math.max(1, Math.round(nextWidth));
+      const roundedHeight = Math.max(320, Math.round(nextHeight));
+      if (
+        !force
+        && Math.abs(roundedWidth - lastAppliedWidth) < 2
+        && Math.abs(roundedHeight - lastAppliedHeight) < 2
+      ) {
+        return;
+      }
+      lastAppliedWidth = roundedWidth;
+      lastAppliedHeight = roundedHeight;
+      renderer.setSize(lastAppliedWidth, lastAppliedHeight);
+      camera.aspect = lastAppliedWidth / lastAppliedHeight;
+      camera.updateProjectionMatrix();
+      renderer.render(scene, camera);
+    }
+
+    let previousTimelineStep: number | null = null;
+    let previousTelemetryLength = telemetryPointsRef.current.length;
+    let lastFrameTimeSeconds = performance.now() * 0.001;
+
     // animation loop
     function animate() {
+      if (isDisposed) return;
       if (!mounted) return;
-      requestAnimationFrame(animate);
-      // update sun direction based on current telemetry if provided
-      // simple: rotate light slowly or align with telemetry
-        if (telemetryPoints && telemetryPoints.length > 0) {
-          const idx = Math.min(Math.max(0, timelineIdx), telemetryPoints.length - 1);
-          const p = telemetryPoints[idx];
-          if (p) {
-            // Determine site coords: prefer selectedSiteId from markerGroup, fallback to custom props
-            const site = sites.find((s) => s.id === selectedSiteId) ?? (typeof customLat === 'number' && typeof customLon === 'number' ? { lat: customLat, lon: customLon } as SiteData : undefined);
-            if (site) {
-              try {
-                const sd = computeBodyFixedDirection(site.lat, site.lon, p.sun_az, p.sun_el);
-                sun.position.copy(new THREE.Vector3(sd.x, sd.y, sd.z).multiplyScalar(12));
-                rimUniforms.sunDir.value.copy(new THREE.Vector3(sd.x, sd.y, sd.z)).normalize();
-                const ed = computeBodyFixedDirection(site.lat, site.lon, p.earth_az, p.earth_el);
-                earthDir = new THREE.Vector3(ed.x, ed.y, ed.z).normalize();
-              } catch (err) {
-                // fallback: gentle rotation
-                const sunDir = new THREE.Vector3(0.5, 0.5, 0.5).normalize();
-                sun.position.copy(sunDir.multiplyScalar(10));
-                rimUniforms.sunDir.value.copy(sun.position).normalize();
-              }
-            }
-          }
+      rafId = requestAnimationFrame(animate);
+      const frameTimeSeconds = performance.now() * 0.001;
+      const rawDt = Math.max(0, frameTimeSeconds - lastFrameTimeSeconds);
+      const clampedDt = Math.min(rawDt, 0.05);
+      lastFrameTimeSeconds = frameTimeSeconds;
+      const frameScale = clampedDt / NOMINAL_FRAME_DT;
+      const bodyLerpAlpha = Math.min(1, Math.max(0, BODY_VECTOR_LERP * frameScale));
+      const cameraLerpAlpha = Math.min(1, Math.max(0, CAMERA_TRANSITION_LERP * frameScale));
+      const autoRotateStep = 0.0006 * frameScale;
+
+      const activeTelemetryPoints = telemetryPointsRef.current;
+      const telemetryLength = activeTelemetryPoints.length;
+      let shouldSnapDirections = false;
+      if (telemetryLength > 0) {
+        const idx = Math.min(Math.max(0, timelineIdxRef.current), telemetryLength - 1);
+        const telemetryLengthChanged = telemetryLength !== previousTelemetryLength;
+        if (telemetryLengthChanged) {
+          previousTimelineStep = null;
+          previousTelemetryLength = telemetryLength;
+          shouldSnapDirections = true;
         }
+
+        if (previousTimelineStep !== null) {
+          const stepDelta = idx - previousTimelineStep;
+          const wrappedTimeline = stepDelta < 0
+            && previousTimelineStep >= telemetryLength - 2
+            && idx <= 1;
+          const jumpedSteps = Math.abs(stepDelta) > 4;
+          if (wrappedTimeline || jumpedSteps) {
+            shouldSnapDirections = true;
+          }
+        } else {
+          shouldSnapDirections = true;
+        }
+        previousTimelineStep = idx;
+      } else {
+        previousTimelineStep = null;
+        previousTelemetryLength = 0;
+      }
+
+      const nextSunDirection = sunDirectionRef.current;
+      if (nextSunDirection) {
+        sanitizeDirection(targetSunDir.set(nextSunDirection.x, nextSunDirection.y, nextSunDirection.z), lastValidSunDir);
+        lastValidSunDir.copy(targetSunDir);
+      } else {
+        targetSunDir.copy(lastValidSunDir);
+      }
+
+      const nextEarthDirection = earthDirectionRef.current;
+      if (nextEarthDirection) {
+        sanitizeDirection(targetEarthDir.set(nextEarthDirection.x, nextEarthDirection.y, nextEarthDirection.z), lastValidEarthDir);
+        lastValidEarthDir.copy(targetEarthDir);
+      } else {
+        targetEarthDir.copy(lastValidEarthDir);
+      }
+
+      sanitizeDirection(targetSunDir, lastValidSunDir);
+      sanitizeDirection(targetEarthDir, lastValidEarthDir);
+
+      syncMarkers();
+
+      if (shouldSnapDirections) {
+        smoothedSunDir.copy(targetSunDir);
+        sanitizeDirection(smoothedSunDir, lastValidSunDir);
+        lastValidSunDir.copy(smoothedSunDir);
+
+        smoothedEarthDir.copy(targetEarthDir);
+        sanitizeDirection(smoothedEarthDir, lastValidEarthDir);
+        lastValidEarthDir.copy(smoothedEarthDir);
+      } else {
+        smoothedSunDir.lerp(targetSunDir, bodyLerpAlpha);
+        sanitizeDirection(smoothedSunDir, lastValidSunDir);
+        lastValidSunDir.copy(smoothedSunDir);
+
+        smoothedEarthDir.lerp(targetEarthDir, bodyLerpAlpha);
+        sanitizeDirection(smoothedEarthDir, lastValidEarthDir);
+        lastValidEarthDir.copy(smoothedEarthDir);
+      }
+
+      sun.position.copy(smoothedSunDir).multiplyScalar(SUN_LIGHT_DISTANCE);
+      rimUniforms.sunDir.value.copy(smoothedSunDir);
+
         // smooth camera lerp toward preset target only when transitioning
         if (isCameraTransitioning) {
-          azimuth += (cameraTarget.az - azimuth) * 0.06;
-          polar += (cameraTarget.pol - polar) * 0.06;
-          distance.value += (cameraTarget.dist - distance.value) * 0.06;
+          azimuth += (cameraTarget.az - azimuth) * cameraLerpAlpha;
+          polar += (cameraTarget.pol - polar) * cameraLerpAlpha;
+          distance.value += (cameraTarget.dist - distance.value) * cameraLerpAlpha;
           // compute target cam pos from spherical target
           const tr = cameraTarget.dist;
           const tx = tr * Math.cos(cameraTarget.pol) * Math.sin(cameraTarget.az);
           const ty = tr * Math.sin(cameraTarget.pol);
           const tz = tr * Math.cos(cameraTarget.pol) * Math.cos(cameraTarget.az);
-          const targetCamPos = new THREE.Vector3(tx, ty, tz);
-          if (camera.position.distanceTo(targetCamPos) < 0.02) {
+          cameraTargetPosition.set(tx, ty, tz);
+          if (camera.position.distanceTo(cameraTargetPosition) < 0.02) {
             isCameraTransitioning = false;
           }
         }
        // simple auto-rotation when not interacting (blend with preset)
        if (!isDragging && !isCameraTransitioning) {
-         azimuth += 0.0006;
+         azimuth += autoRotateStep;
        }
        updateCamera();
 
        // animate pulsing of beacons and rings, update HUD labels
-       const t = performance.now() * 0.001;
+       const t = frameTimeSeconds;
        markerGroup.children.forEach((c, idx) => {
          const g = c as THREE.Group & { hudLabel?: HTMLDivElement };
          const top = g.children[1];
@@ -672,30 +1049,44 @@ export const LunarOrbitalGlobe: React.FC<Props> = ({
          }
        });
 
-        // update rim shader sun direction
-        rimUniforms.sunDir.value.copy(sun.position).normalize();
+       const activeSunVisible = sunVisibleRef.current;
+       const activeEarthVisible = earthVisibleRef.current;
+       sunRayMaterial.opacity = activeSunVisible ? 0.95 : 0.32;
+       sunIndicatorMaterial.opacity = activeSunVisible ? 0.95 : 0.32;
+       earthRayMaterial.opacity = activeEarthVisible ? 0.95 : 0.32;
+       earthIndicatorMaterial.opacity = activeEarthVisible ? 0.95 : 0.32;
+
        // update directional rays for the active site
        try {
-         raysGroup.clear();
-         const sel = markerGroup.children.find((m) => (m as any).siteId === selectedSiteId) as THREE.Object3D | undefined;
+         const activeSelectedSiteId = selectedSiteIdRef.current;
+         const sel = markerGroup.children.find((m) => (m as any).siteId === activeSelectedSiteId) as THREE.Object3D | undefined;
          if (sel) {
-           const world = new THREE.Vector3();
-           sel.getWorldPosition(world);
-            const sunDir = sun.position.clone().normalize();
-            const sunPts = [world.clone(), world.clone().add(sunDir.clone().multiplyScalar(1.9))];
-            const sunGeom = new THREE.BufferGeometry().setFromPoints(sunPts);
-            const sunMat = new THREE.LineBasicMaterial({ color: 0xF59E0B, linewidth: 2, transparent: true, opacity: 0.95 });
-            const sunLine = new THREE.Line(sunGeom, sunMat);
-            raysGroup.add(sunLine);
+            sel.getWorldPosition(activeSiteWorldPosition);
 
-            const earthPts = [world.clone(), world.clone().add(earthDir.clone().multiplyScalar(1.9))];
-            const earthGeom = new THREE.BufferGeometry().setFromPoints(earthPts);
-            const earthMat = new THREE.LineBasicMaterial({ color: 0x06B6D4, linewidth: 2, transparent: true, opacity: 0.95 });
-            const earthLine = new THREE.Line(earthGeom, earthMat);
-            raysGroup.add(earthLine);
+            sunRayEnd.copy(smoothedSunDir).multiplyScalar(VECTOR_INDICATOR_LENGTH).add(activeSiteWorldPosition);
+            earthRayEnd.copy(smoothedEarthDir).multiplyScalar(VECTOR_INDICATOR_LENGTH).add(activeSiteWorldPosition);
+
+           setLinePoints(sunRay, activeSiteWorldPosition, sunRayEnd);
+           setLinePoints(earthRay, activeSiteWorldPosition, earthRayEnd);
+
+           sunIndicator.position.copy(sunRayEnd);
+           earthIndicator.position.copy(earthRayEnd);
+
+           sunRay.visible = true;
+           earthRay.visible = true;
+           sunIndicator.visible = true;
+           earthIndicator.visible = true;
+         } else {
+           sunRay.visible = false;
+           earthRay.visible = false;
+           sunIndicator.visible = false;
+           earthIndicator.visible = false;
          }
-       } catch (err) {
-         // ignore
+       } catch {
+         sunRay.visible = false;
+         earthRay.visible = false;
+         sunIndicator.visible = false;
+         earthIndicator.visible = false;
        }
 
        renderer.render(scene, camera);
@@ -704,43 +1095,126 @@ export const LunarOrbitalGlobe: React.FC<Props> = ({
 
     // handle resize
     const onResize = () => {
-      const w = mount.clientWidth || 480;
-      const h = Math.max(320, mount.clientHeight || 320);
-      renderer.setSize(w, h);
-      camera.aspect = w / h;
-      camera.updateProjectionMatrix();
+      applyRendererSize(mount.clientWidth || 480, mount.clientHeight || 320);
     };
+    let resizeObserver: ResizeObserver | null = null;
+    if (typeof ResizeObserver !== 'undefined') {
+      resizeObserver = new ResizeObserver((entries) => {
+        const entry = entries[0];
+        if (!entry) return;
+        applyRendererSize(entry.contentRect.width, entry.contentRect.height);
+      });
+      resizeObserver.observe(mount);
+    }
     window.addEventListener('resize', onResize);
 
     return () => {
+      isDisposed = true;
       mounted = false;
+      if (rafId) {
+        cancelAnimationFrame(rafId);
+        rafId = 0;
+      }
+
+      renderer.domElement.removeEventListener('pointerdown', onPointerDown);
+      window.removeEventListener('pointermove', onPointerMove);
+      window.removeEventListener('pointerup', onPointerUp);
+      renderer.domElement.removeEventListener('wheel', onWheel);
       renderer.domElement.removeEventListener('click', onClick);
       window.removeEventListener('resize', onResize);
+      resizeObserver?.disconnect();
+
+      const sharedTextures = new Set<THREE.Texture>();
+      const loadedMoonTexture = getLoadedMoonTexture();
+      const sharedAlbedo = (lunarTextureCache as any).threeAlbedo as THREE.Texture | undefined;
+      const sharedBump = (lunarTextureCache as any).threeBump as THREE.Texture | undefined;
+      if (loadedMoonTexture) sharedTextures.add(loadedMoonTexture);
+      if (sharedAlbedo) sharedTextures.add(sharedAlbedo);
+      if (sharedBump) sharedTextures.add(sharedBump);
+
+      const disposedTextures = new Set<THREE.Texture>();
+      const disposedMaterials = new Set<THREE.Material>();
+      const disposedGeometries = new Set<THREE.BufferGeometry>();
+
+      const disposeTexture = (texture: THREE.Texture | null | undefined) => {
+        if (!texture || sharedTextures.has(texture) || disposedTextures.has(texture)) return;
+        disposedTextures.add(texture);
+        try { texture.dispose(); } catch {}
+      };
+
+      const disposeMaterial = (material: THREE.Material | THREE.Material[] | null | undefined) => {
+        if (!material) return;
+        const materials = Array.isArray(material) ? material : [material];
+        const textureKeys: readonly string[] = [
+          'map',
+          'alphaMap',
+          'aoMap',
+          'bumpMap',
+          'displacementMap',
+          'emissiveMap',
+          'envMap',
+          'lightMap',
+          'metalnessMap',
+          'normalMap',
+          'roughnessMap',
+          'specularMap',
+          'gradientMap',
+        ];
+
+        materials.forEach((mat) => {
+          if (disposedMaterials.has(mat)) return;
+          disposedMaterials.add(mat);
+          textureKeys.forEach((key) => {
+            disposeTexture((mat as any)[key] as THREE.Texture | null | undefined);
+          });
+          try { mat.dispose(); } catch {}
+        });
+      };
+
+      const disposeObject3D = (object: THREE.Object3D | null | undefined) => {
+        if (!object) return;
+        object.traverse((child) => {
+          const geometry = (child as any).geometry as THREE.BufferGeometry | undefined;
+          if (geometry && !disposedGeometries.has(geometry)) {
+            disposedGeometries.add(geometry);
+            try { geometry.dispose(); } catch {}
+          }
+          disposeMaterial((child as any).material as THREE.Material | THREE.Material[] | undefined);
+        });
+      };
+
+      disposeObject3D(markerGroup);
+      disposeObject3D(graticule);
+      disposeObject3D(ring);
+      disposeObject3D(raysGroup);
+      disposeObject3D(moon);
+      disposeObject3D(rimSphere);
+
+      (renderer as any).renderLists?.dispose?.();
+      try { (renderer as any).forceContextLoss?.(); } catch {}
       renderer.dispose();
+
       try { mount.removeChild(renderer.domElement); } catch {}
       try { mount.removeChild(overlay); } catch {}
       focusCameraOnSiteRef.current = () => {};
-      // Do not dispose cached textures (they are kept for instant reuse). Dispose only materials we created here.
-      try { sphereMat.dispose(); } catch {}
-      try { rimMat.dispose(); } catch {}
     };
-  }, [sites, selectedSiteId, comparedSiteIds, onSiteSelect, onPinnedSiteFocus, customLat, customLon, timelineIdx, telemetryPoints]);
+  }, []);
 
   useEffect(() => {
-    focusCameraOnSiteRef.current(focusedSite ?? null);
-  }, [focusedSite]);
+    if (focusedSite && !Number.isNaN(focusedSite.lat) && !Number.isNaN(focusedSite.lon)) {
+      focusCameraOnSiteRef.current(focusedSite);
+      return;
+    }
+
+    const activeSite = sites.find((site) => site.id === selectedSiteId)
+      ?? (typeof customLat === 'number' && typeof customLon === 'number'
+        ? ({ lat: customLat, lon: customLon } as SiteData)
+        : null);
+    focusCameraOnSiteRef.current(activeSite);
+  }, [focusedSite?.id, selectedSiteId, sites, customLat, customLon]);
 
   // Fallback SVG rendering when WebGL is not available (jsdom / headless)
-  // Safe WebGL detection for fallback rendering (avoid calling getContext in jsdom)
-  let hasWebGL = false;
-  try {
-    const _c = document.createElement('canvas');
-    hasWebGL = !!(_c.getContext && (_c.getContext('webgl') || _c.getContext('experimental-webgl')));
-  } catch (e) {
-    hasWebGL = false;
-  }
-
-  if (!hasWebGL) {
+  if (shouldUseSvgFallback) {
     // SVG projection: simple equirectangular mapping inside circle
     const width = 420;
     const height = 420;
@@ -837,7 +1311,7 @@ export const LunarOrbitalGlobe: React.FC<Props> = ({
           <button onClick={() => setCameraPresetRef.current('global')} style={{ background: '#090D16', border: '1px solid #1E293B', color: '#E2E8F0', padding: '6px 8px', borderRadius: 8 }}>Global View</button>
         </div>
       </div>
-      <div ref={mountRef} style={{ width: '100%', height: 380, position: 'relative' }} />
+      <div ref={mountRef} className="relative h-[380px] w-full sm:h-[420px]" />
     </div>
   );
 };

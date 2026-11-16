@@ -12,6 +12,7 @@ import {
 } from './lib/orbitalPhysics';
 import { runAHPTOPSIS, DEFAULT_WEIGHTS, type AHPWeights, type SiteRankingEntry } from './lib/ahpTopsis';
 import { exportTimelineCSV } from './lib/exportDossier';
+import { computeBodyFixedDirection } from './lib/lunarGlobeMath';
 
 type AppMode = 'flight-director' | 'explorer';
 
@@ -35,6 +36,19 @@ const MISSION_PROGRAM_STYLES: Record<MissionProgramTag, { background: string; bo
 const COUNTDOWN_INTERVAL_HOURS = 2;
 const MAX_PINNED_COMPARE_SITES = 2;
 const COMPARISON_WINDOW_POINTS = 169;
+const PLAYBACK_STEP_INTERVAL_MS: Record<number, number> = {
+  1: 667,
+  5: 250,
+  20: 125,
+};
+
+function getPlaybackStepIntervalMs(speed: number): number {
+  const explicitInterval = PLAYBACK_STEP_INTERVAL_MS[speed];
+  if (explicitInterval !== undefined) {
+    return explicitInterval;
+  }
+  return Math.max(90, Math.round(667 / Math.max(1, speed)));
+}
 
 type DeltaDirection = 'benefit' | 'cost';
 
@@ -776,6 +790,28 @@ export default function App() {
   const displaySite = customCoords.active && telemetry ? telemetry.site : selectedSite;
   const activeSiteId = displaySite.id;
   const isCustomCoordActive = customCoords.active || selectedSiteId === 'custom' || displaySite.id === 'custom';
+  const globeBodyDirections = useMemo(() => {
+    if (!currentPoint || Number.isNaN(displaySite.lat) || Number.isNaN(displaySite.lon)) {
+      return {
+        sunDirection: null,
+        earthDirection: null,
+      };
+    }
+
+    try {
+      const sun = computeBodyFixedDirection(displaySite.lat, displaySite.lon, currentPoint.sun_az, currentPoint.sun_el);
+      const earth = computeBodyFixedDirection(displaySite.lat, displaySite.lon, currentPoint.earth_az, currentPoint.earth_el);
+      return {
+        sunDirection: { x: sun.x, y: sun.y, z: sun.z },
+        earthDirection: { x: earth.x, y: earth.y, z: earth.z },
+      };
+    } catch {
+      return {
+        sunDirection: null,
+        earthDirection: null,
+      };
+    }
+  }, [currentPoint, displaySite.lat, displaySite.lon]);
   const [isCompareOpen, setIsCompareOpen] = useState(false);
   const [comparedSiteIds, setComparedSiteIds] = useState<string[]>([]);
   const [focusedGlobeSiteId, setFocusedGlobeSiteId] = useState<string>(selectedSiteId);
@@ -935,19 +971,17 @@ export default function App() {
 
   useEffect(() => {
     if (!playing) return;
-    // base tick ms per index at 1x
-    const baseMs = 500; // 500ms per 2-hour slot at 1x
-    const ms = Math.max(10, Math.round(baseMs / playSpeed));
+    const ms = getPlaybackStepIntervalMs(playSpeed);
     const timelineLength = Math.max(1, telemetry?.points.length ?? 169);
-    const id = setInterval(() => {
+    const id = window.setInterval(() => {
       setTimelineIdx((i) => {
         const next = (i + 1) % timelineLength;
         return next;
       });
-    }, ms) as unknown as number;
+    }, ms);
     playIntervalRef.current = id;
     return () => {
-      if (playIntervalRef.current) {
+      if (playIntervalRef.current !== null) {
         clearInterval(playIntervalRef.current);
         playIntervalRef.current = null;
       }
@@ -1515,13 +1549,18 @@ export default function App() {
                     <div>
                       <LunarOrbitalGlobe
                         sites={sites}
-                        selectedSiteId={selectedSiteId}
+                        selectedSiteId={activeSiteId}
                         comparedSiteIds={comparedSiteIds}
                         onSiteSelect={handleSiteSelect}
                         onPinnedSiteFocus={focusGlobeOnSite}
                         focusedSite={focusedGlobeSite}
                         customLat={customCoords.active ? parseFloat(customCoords.lat || '0') : undefined}
                         customLon={customCoords.active ? parseFloat(customCoords.lon || '0') : undefined}
+                        currentStep={timelineIdx}
+                        sunVisible={currentPoint?.sun_visible}
+                        earthVisible={currentPoint?.earth_visible}
+                        sunDirection={globeBodyDirections.sunDirection}
+                        earthDirection={globeBodyDirections.earthDirection}
                         timelineIdx={timelineIdx}
                         telemetryPoints={telemetry?.points ?? []}
                       />
