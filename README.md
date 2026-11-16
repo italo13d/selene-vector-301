@@ -1,6 +1,7 @@
 # Selene Vector 301 - Lunar Landing Site Navigator
 
-Live demo: https://selene-vector-301.vercel.app/
+- **Live demo:** https://selene-vector-301.vercel.app/
+- **Demo video (27s):** https://youtu.be/zjiCPHRlCyQ
 
 ## Overview
 
@@ -31,13 +32,16 @@ Selene Vector 301 is a mission planning prototype for the 2026 NASA Space Apps C
 
 ## Data & Physics Pipeline
 
-- Ephemeris source: NASA JPL Horizons export with `APPARENT='AIRLESS'`.
-- Local horizon masking: 72-sector LRO LOLA profile lookup by azimuth index.
-- Spherical fallback for custom coordinates: `h_deg = -degrees(acos(1737.4 / (1737.4 + max(0, alt_km))))`.
-- Solar efficiency model: `efficiency = sun_visible ? max(0, sin(radians(sun_el)) * 100) : 0`.
-- Ranking engine: vector-normalized AHP-TOPSIS over solar uptime, DTE uptime, slope, and PSR distance.
+- **Ephemeris source:** NASA JPL Horizons System export (`TARGET='301'`, `APPARENT='AIRLESS'`).
+- **Local horizon masking & terrain context:** 72-sector NASA LRO LOLA elevation profiles via LROC Quickmap and NASA Moon Trek.
+- **Rover mobility & survival constraints:** Canadian Space Agency (CSA) lunar rover parameters (15° maximum slope threshold and eclipse power survival limits).
+- **Spherical fallback for custom coordinates:** `h_deg = -degrees(acos(1737.4 / (1737.4 + max(0, alt_km))))`.
+- **Solar efficiency model:** `efficiency = sun_visible ? max(0, sin(radians(sun_el)) * 100) : 0`.
+- **Ranking engine:** Vector-normalized AHP-TOPSIS over solar uptime, DTE uptime, slope, and PSR distance.
 
-## Development
+## Tech Stack & Development
+
+Built with **React, TypeScript, Vite, Tailwind CSS, Three.js (WebGL), custom SVG polar charts, and Vitest**, deployed on **Vercel**.
 
 Prerequisite: Node 18+
 
@@ -69,6 +73,10 @@ npm run build
 
 - The UI ships with a jsdom-friendly SVG fallback for CI environments without WebGL.
 - For custom coordinates, telemetry remains physically consistent with the spherical fallback model but is less terrain-faithful than LOLA-surveyed curated sites.
+
+## Use of Super Intelligence (SI) Disclosure
+
+Super Intelligence (SI) tools were utilized during development to assist with TypeScript/Three.js code scaffolding, debugging, orbital geometry verification, and technical documentation refinement. All ephemeris datasets, horizon elevation masks, physics calculations, and live demo recordings were deterministically computed or recorded directly without AI-generated media.
 
 ## License
 
